@@ -42,7 +42,7 @@ curl -fsS http://127.0.0.1:18080/readyz
 
 ## 两节点目标 Kubernetes
 
-目标集群的服务清单位于 `deploy/bigdata-lab`，只部署一个 `zio-flink-operator` Service 和一个两副本 Deployment。副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和；Service 使用 NodePort `30881`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
+目标集群的服务清单位于 `deploy/bigdata-lab`，只部署一个 `zio-flink-operator` Service 和一个两副本 Deployment。副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和；Service 使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
 
 ```text
 s3://flink-savepoints/zio-flink-operator/bigdata-lab/
@@ -54,8 +54,8 @@ s3://flink-savepoints/zio-flink-operator/bigdata-lab/
 kubectl apply -k deploy/bigdata-lab
 kubectl -n bigdata-lab rollout status deployment/zio-flink-operator --timeout=180s
 kubectl -n bigdata-lab get pods -l app.kubernetes.io/name=zio-flink-operator -o wide
-curl -fsS http://<任一节点>:30881/healthz
-curl -fsS 'http://<任一节点>:30881/v1/state?namespace=bigdata-lab'
+curl -fsS http://<任一节点>:30882/healthz
+curl -fsS 'http://<任一节点>:30882/v1/state?namespace=bigdata-lab'
 ```
 
 两个副本读取同一个 Kubernetes API Server 和同一组 Flink CR。每个副本都会轮询，因此状态统一但 Kubernetes list 流量随副本数线性增加；当前版本没有 leader election。
