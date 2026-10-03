@@ -42,7 +42,7 @@ curl -fsS http://127.0.0.1:18080/readyz
 
 ## 两节点目标 Kubernetes
 
-目标集群的服务清单位于 `deploy/bigdata-lab`，只部署一个 `zio-flink-operator` Service 和一个两副本 Deployment。副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和；Service 使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
+目标集群的服务清单位于 `deploy/bigdata-lab`，只部署一个 `zio-flink-operator` Service 和一个两副本 Deployment。副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和偏好，滚动更新允许在节点暂时不足时调度；Service 使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
 
 ```text
 s3://flink-savepoints/zio-flink-operator/bigdata-lab/
