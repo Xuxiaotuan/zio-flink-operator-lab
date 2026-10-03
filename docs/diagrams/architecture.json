@@ -9,13 +9,14 @@
     "locale": "zh-CN",
     "repository": {
       "url": "https://github.com/Xuxiaotuan/zio-flink-operator-lab",
-      "revision": "7f59ed4812c382b141e82dc324ae861fa93c236e"
+      "revision": "504b132c28234185790b8d3db2c5611397190343"
     }
   },
   "components": [
     {"id": "client", "type": "frontend", "label": "CLI / HTTP Client", "sublabel": "CLI / API", "pos": [30, 300], "size": [150, 70]},
     {"id": "control", "type": "backend", "label": "ZIO Control Plane", "sublabel": "OperatorProgram / Server", "pos": [220, 300], "size": [170, 70], "sources": [{"path": "src/main/scala/cn/xuyinyin/flinklab/operator/OperatorProgram.scala"}]},
     {"id": "api", "type": "backend", "label": "KubernetesApiLive", "sublabel": "ZIO effect + Java Client", "pos": [440, 300], "size": [180, 70], "sources": [{"path": "src/main/scala/cn/xuyinyin/flinklab/kubernetes/KubernetesApi.scala"}]},
+    {"id": "state", "type": "database", "label": "StateStore", "sublabel": "Kubernetes CR / PostgreSQL", "pos": [220, 500], "size": [170, 70], "sources": [{"path": "src/main/scala/cn/xuyinyin/flinklab/state/StateStore.scala"}]},
     {"id": "kube", "type": "cloud", "label": "Kubernetes API Server", "sublabel": "CRD API", "pos": [650, 300], "size": [190, 70]},
     {"id": "operator", "type": "backend", "label": "Flink Kubernetes Operator", "sublabel": "reconcile", "pos": [880, 180], "size": [210, 70]},
     {"id": "crs", "type": "database", "label": "Flink CRs", "sublabel": "Deployment / SessionJob / Snapshot", "pos": [880, 420], "size": [210, 70]},
@@ -26,6 +27,7 @@
     {"id": "r1", "from": "client", "to": "control", "label": "submit / status / watch", "variant": "emphasis", "labelAt": [225, 384]},
     {"id": "r2", "from": "control", "to": "api", "label": "ZIO effect", "labelAt": [415, 270]},
     {"id": "r3", "from": "api", "to": "kube", "label": "Kubernetes API", "variant": "emphasis", "labelAt": [715, 384]},
+    {"id": "r-state", "from": "control", "to": "state", "label": "put / get shared state", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [500, 480]},
     {"id": "r4", "from": "kube", "to": "operator", "label": "CR watch / reconcile", "fromSide": "top", "toSide": "left"},
     {"id": "r5", "from": "operator", "to": "crs", "label": "status update", "fromSide": "bottom", "toSide": "top", "labelAt": [1115, 264]},
     {"id": "r6", "from": "operator", "to": "flink", "label": "deploy / manage Job", "variant": "emphasis", "labelAt": [1120, 150]},

@@ -13,7 +13,7 @@
     {"label": "期望状态"},
     {"label": "Operator"},
     {"label": "运行与结果"},
-    {"label": "控制面输出"}
+    {"label": "统一状态与输出"}
   ],
   "nodes": [
     {"id": "request", "type": "frontend", "label": "CLI / HTTP", "sublabel": "commands", "stage": 0, "row": 0, "width": 150},
@@ -22,7 +22,8 @@
     {"id": "operator", "type": "backend", "label": "Flink Operator", "sublabel": "reconcile", "stage": 2, "row": 0, "width": 160},
     {"id": "job", "type": "backend", "label": "Flink Job", "sublabel": "JobManager / TaskManager", "stage": 3, "row": 0, "width": 160},
     {"id": "result", "type": "cloud", "label": "Snapshot Result", "sublabel": "RustFS path + CR status", "stage": 3, "row": 1, "width": 180},
-    {"id": "status", "type": "frontend", "label": "Status Projection", "sublabel": "normalized CLI / HTTP output", "stage": 4, "row": 0, "width": 180}
+    {"id": "state", "type": "database", "label": "StateStore", "sublabel": "Kubernetes CR / PostgreSQL", "stage": 4, "row": 0, "width": 160},
+    {"id": "status", "type": "frontend", "label": "Status Projection", "sublabel": "normalized CLI / HTTP output", "stage": 4, "row": 1, "width": 180}
   ],
   "flows": [
     {"id": "d1", "from": "request", "to": "resource", "label": "apply", "variant": "emphasis", "route": "straight"},
@@ -31,7 +32,8 @@
     {"id": "d4", "from": "snapshot", "to": "operator", "label": "snapshot CR", "route": "vertical-channel", "labelAt": [540, 340]},
     {"id": "d5", "from": "operator", "to": "job", "label": "reconcile", "variant": "emphasis", "route": "straight", "labelAt": [600, 110]},
     {"id": "d6", "from": "operator", "to": "result", "label": "checkpoint / savepoint", "route": "bottom-channel", "labelAt": [650, 340]},
-    {"id": "d7", "from": "job", "to": "status", "label": "Job state", "variant": "emphasis", "route": "straight", "labelAt": [840, 205]},
-    {"id": "d8", "from": "result", "to": "status", "label": "path + snapshot state", "route": "vertical-channel", "labelAt": [950, 340]}
+    {"id": "d7", "from": "job", "to": "state", "label": "CR status", "variant": "emphasis", "route": "straight", "labelAt": [770, 205]},
+    {"id": "d8", "from": "result", "to": "state", "label": "path + snapshot state", "fromSide": "bottom", "toSide": "left", "via": [[745, 400], [840, 400], [840, 157]], "labelAt": [760, 400]},
+    {"id": "d9", "from": "state", "to": "status", "label": "shared state", "variant": "emphasis", "route": "vertical-channel", "labelAt": [1010, 340]}
   ]
 }

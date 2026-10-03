@@ -5043,7 +5043,7 @@
         <text x="745" y="68" class="t-dim" font-size="9" font-weight="600" text-anchor="middle">04 / 运行与结果</text>
 
         <rect data-graph-role="structural-frame" data-composition-frame-kind="stage" data-composition-frame-id="4" x="876" y="46" width="168" height="400" rx="10" class="c-lane" stroke-width="1"/>
-        <text x="960" y="68" class="t-dim" font-size="9" font-weight="600" text-anchor="middle">05 / 控制面输出</text>
+        <text x="960" y="68" class="t-dim" font-size="9" font-weight="600" text-anchor="middle">05 / 统一状态与输出</text>
 
         <!-- Flow paths -->
         <path data-edge-from="request" data-edge-to="resource" data-edge-label="apply" data-edge-key="0" data-edge-id="d1" data-composition-points="175,157;235,157" d="M 175 157 L 235 157" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
@@ -5052,8 +5052,9 @@
         <path data-edge-from="snapshot" data-edge-to="operator" data-edge-label="snapshot CR" data-edge-key="3" data-edge-id="d4" data-composition-points="395,271;439,271;439,157;450,157" d="M 395 271 L 439 271 L 439 157 L 450 157" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="operator" data-edge-to="job" data-edge-label="reconcile" data-edge-key="4" data-edge-id="d5" data-composition-points="610,157;665,157" d="M 610 157 L 665 157" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="operator" data-edge-to="result" data-edge-label="checkpoint / savepoint" data-edge-key="5" data-edge-id="d6" data-composition-points="610,157;610,326;655,326;655,271" d="M 610 157 L 610 326 L 655 326 L 655 271" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="job" data-edge-to="status" data-edge-label="Job state" data-edge-key="6" data-edge-id="d7" data-composition-points="825,157;870,157" d="M 825 157 L 870 157" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="result" data-edge-to="status" data-edge-label="path + snapshot state" data-edge-key="7" data-edge-id="d8" data-composition-points="835,271;879,271;879,157;870,157" d="M 835 271 L 879 271 L 879 157 L 870 157" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="job" data-edge-to="state" data-edge-label="CR status" data-edge-key="6" data-edge-id="d7" data-composition-points="825,157;880,157" d="M 825 157 L 880 157" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="result" data-edge-to="state" data-edge-label="path + snapshot state" data-edge-key="7" data-edge-id="d8" data-composition-points="745,300;745,400;840,400;840,157;880,157" d="M 745 300 L 745 400 L 840 400 L 840 157 L 880 157" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="state" data-edge-to="status" data-edge-label="shared state" data-edge-key="8" data-edge-id="d9" data-composition-points="960,186;916,186;916,242;960,242" d="M 960 186 L 916 186 L 916 242 L 960 242" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
 
         <!-- Nodes -->
         <g id="node-request" data-node-id="request" data-node-label="CLI / HTTP" tabindex="0" role="button" aria-label="聚焦CLI / HTTP，commands, 01 / 提交" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="commands" data-node-context="01 / 提交">
@@ -5125,18 +5126,30 @@
           <text data-detail="context" x="745" y="279" class="t-muted" font-size="7" text-anchor="middle">RustFS path + CR status</text>
         </g>
 
-        <g id="node-status" data-node-id="status" data-node-label="Status Projection" tabindex="0" role="button" aria-label="聚焦Status Projection，normalized CLI / HTTP output, 05 / 控制面输出" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="normalized CLI / HTTP output" data-node-context="05 / 控制面输出">
-          <title>Status Projection · normalized CLI / HTTP output · 05 / 控制面输出</title>
-          <rect x="870" y="128" width="180" height="58" rx="6" class="c-mask"/>
-          <rect x="870" y="128" width="180" height="58" rx="6" class="c-frontend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(876 134) scale(0.6875)">
+        <g id="node-state" data-node-id="state" data-node-label="StateStore" tabindex="0" role="button" aria-label="聚焦StateStore，Kubernetes CR / PostgreSQL, 05 / 统一状态与输出" aria-pressed="false" data-node-kind="database" data-node-sublabel="Kubernetes CR / PostgreSQL" data-node-context="05 / 统一状态与输出">
+          <title>StateStore · Kubernetes CR / PostgreSQL · 05 / 统一状态与输出</title>
+          <rect x="880" y="128" width="160" height="58" rx="6" class="c-mask"/>
+          <rect x="880" y="128" width="160" height="58" rx="6" class="c-database" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(886 134) scale(0.6875)">
+            <ellipse cx="8" cy="4" rx="5" ry="2"/>
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="960" y="149" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">StateStore</text>
+          <text data-detail="context" x="960" y="165" class="t-muted" font-size="7" text-anchor="middle">Kubernetes CR / PostgreSQL</text>
+        </g>
+
+        <g id="node-status" data-node-id="status" data-node-label="Status Projection" tabindex="0" role="button" aria-label="聚焦Status Projection，normalized CLI / HTTP output, 05 / 统一状态与输出" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="normalized CLI / HTTP output" data-node-context="05 / 统一状态与输出">
+          <title>Status Projection · normalized CLI / HTTP output · 05 / 统一状态与输出</title>
+          <rect x="870" y="242" width="180" height="58" rx="6" class="c-mask"/>
+          <rect x="870" y="242" width="180" height="58" rx="6" class="c-frontend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(876 248) scale(0.6875)">
             <rect x="2" y="3" width="12" height="10" rx="2"/>
             <path d="M2 6.5h12"/>
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="960" y="149" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">Status Projection</text>
-          <text data-detail="context" x="960" y="165" class="t-muted" font-size="7" text-anchor="middle">normalized CLI / HTTP output</text>
+          <text data-node-label="" data-detail-anchor="" x="960" y="263" class="t-primary" font-size="10" font-weight="600" text-anchor="middle">Status Projection</text>
+          <text data-detail="context" x="960" y="279" class="t-muted" font-size="7" text-anchor="middle">normalized CLI / HTTP output</text>
         </g>
 
         <!-- Flow labels -->
@@ -5164,25 +5177,33 @@
           <rect x="590.1" y="329" width="119.8" height="16" rx="4" class="c-mask"/>
           <text x="650" y="340" class="t-muted" font-size="8" text-anchor="middle">checkpoint / savepoint</text>
         </g>
-        <g data-detail="context" data-edge-from="job" data-edge-to="status" data-edge-label="Job state" data-edge-key="6" data-edge-id="d7">
-          <rect x="811.95" y="194" width="56.1" height="16" rx="4" class="c-mask"/>
-          <text x="840" y="205" class="t-backend" font-size="8" text-anchor="middle">Job state</text>
+        <g data-detail="context" data-edge-from="job" data-edge-to="state" data-edge-label="CR status" data-edge-key="6" data-edge-id="d7">
+          <rect x="741.95" y="194" width="56.1" height="16" rx="4" class="c-mask"/>
+          <text x="770" y="205" class="t-backend" font-size="8" text-anchor="middle">CR status</text>
         </g>
-        <g data-detail="context" data-edge-from="result" data-edge-to="status" data-edge-label="path + snapshot state" data-edge-key="7" data-edge-id="d8">
-          <rect x="892.55" y="329" width="114.9" height="16" rx="4" class="c-mask"/>
-          <text x="950" y="340" class="t-muted" font-size="8" text-anchor="middle">path + snapshot state</text>
+        <g data-detail="context" data-edge-from="result" data-edge-to="state" data-edge-label="path + snapshot state" data-edge-key="7" data-edge-id="d8">
+          <rect x="702.55" y="389" width="114.9" height="16" rx="4" class="c-mask"/>
+          <text x="760" y="400" class="t-muted" font-size="8" text-anchor="middle">path + snapshot state</text>
+        </g>
+        <g data-detail="context" data-edge-from="state" data-edge-to="status" data-edge-label="shared state" data-edge-key="8" data-edge-id="d9">
+          <rect x="974.6" y="329" width="70.8" height="16" rx="4" class="c-mask"/>
+          <text x="1010" y="340" class="t-backend" font-size="8" text-anchor="middle">shared state</text>
         </g>
 
         <!-- Legend -->
-        <g data-legend="">
+        <g data-legend="" data-legend-bridge="">
           <text x="40" y="464" class="t-primary" font-size="12" font-weight="650">图例</text>
           <g data-legend-semantic-kind="emphasis" data-legend-x="40" data-legend-baseline="484" data-legend-width="83">
             <path d="M 40 481 L 74 481" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
             <text x="83" y="484" class="t-muted" font-size="10" font-weight="500">主要数据</text>
           </g>
-          <g data-legend-semantic-kind="default" data-legend-x="145" data-legend-baseline="484" data-legend-width="73">
-            <path d="M 145 481 L 179 481" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-            <text x="188" y="484" class="t-muted" font-size="10" font-weight="500">数据流</text>
+          <g data-legend-semantic-kind="database" data-legend-kind="database" data-legend-label="数据存储" data-legend-x="145" data-legend-baseline="484" data-legend-width="83">
+            <rect x="145" y="476" width="14" height="9" rx="2" class="c-database" stroke-width="1"/>
+            <text x="167" y="484" class="t-muted" font-size="10" font-weight="500">数据存储</text>
+          </g>
+          <g data-legend-semantic-kind="default" data-legend-x="250" data-legend-baseline="484" data-legend-width="73">
+            <path d="M 250 481 L 284 481" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+            <text x="293" y="484" class="t-muted" font-size="10" font-weight="500">数据流</text>
           </g>
         </g>
       </svg>
