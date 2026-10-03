@@ -26,7 +26,7 @@ kubectl -n flink-lineage-test rollout status deployment/zio-flink-operator --tim
 kubectl -n flink-lineage-test get pods -l app.kubernetes.io/name=zio-flink-operator -o wide
 ```
 
-本地 OrbStack 使用本机镜像和 `imagePullPolicy: IfNotPresent`。当前本地环境是单节点；两个副本证明进程复制和 Service 路由，不证明跨节点高可用。`deploy/local` 设置 `ZIO_FLINK_STATE_BACKEND=kubernetes`。
+本地 OrbStack 使用本机镜像和 `imagePullPolicy: IfNotPresent`。当前本地环境是单节点；两个副本证明进程复制和 Service 路由，不证明跨节点高可用。两个副本使用 `maxSurge: 0`、`maxUnavailable: 1` 滚动更新，先释放旧 Pod 再创建新 Pod，适配两节点反亲和约束。`deploy/local` 设置 `ZIO_FLINK_STATE_BACKEND=kubernetes`。
 
 在两台或更多节点的集群中，Deployment 的副本使用 hostname 反亲和偏好分散调度；Service 不使用会话亲和性，任一副本都能从 API Server 读取相同 CR 状态。
 
@@ -42,7 +42,7 @@ curl -fsS http://127.0.0.1:18080/readyz
 
 ## 两节点目标 Kubernetes
 
-目标集群的服务清单位于 `deploy/bigdata-lab`，只部署一个 `zio-flink-operator` Service 和一个两副本 Deployment。副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和偏好，滚动更新允许在节点暂时不足时调度；Service 使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
+目标集群的服务清单位于 `deploy/bigdata-lab`，只部署一个 `zio-flink-operator` Service 和一个两副本 Deployment。副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和偏好，滚动更新设置 `maxSurge: 0`、`maxUnavailable: 1`，先释放一个旧副本再调度新副本；Service 使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
 
 ```text
 s3://flink-savepoints/zio-flink-operator/bigdata-lab/
