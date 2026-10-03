@@ -2,6 +2,8 @@
 
 监控分为两类：Flink 作业 CR 的运行状态，以及 `FlinkStateSnapshot` 的 checkpoint/savepoint 请求状态。
 
+状态数据流见 [数据流图](diagrams/dataflow.html)，组件关系见 [架构图](diagrams/architecture.html)。
+
 ## CLI
 
 查询资源的完整 CR：

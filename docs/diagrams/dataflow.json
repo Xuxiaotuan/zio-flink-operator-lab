@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Flink 任务提交与状态数据流",
+    "output": "dataflow.html",
+    "viewBox": [1080, 520],
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "stages": [
+    {"label": "提交"},
+    {"label": "期望状态"},
+    {"label": "Operator"},
+    {"label": "运行与结果"},
+    {"label": "控制面输出"}
+  ],
+  "nodes": [
+    {"id": "request", "type": "frontend", "label": "CLI / HTTP", "sublabel": "commands", "stage": 0, "row": 0, "width": 150},
+    {"id": "resource", "type": "backend", "label": "Flink CR", "sublabel": "Deployment / SessionJob", "stage": 1, "row": 0, "width": 160},
+    {"id": "snapshot", "type": "backend", "label": "Snapshot CR", "sublabel": "checkpoint / savepoint", "stage": 1, "row": 1, "width": 160},
+    {"id": "operator", "type": "backend", "label": "Flink Operator", "sublabel": "reconcile", "stage": 2, "row": 0, "width": 160},
+    {"id": "job", "type": "backend", "label": "Flink Job", "sublabel": "JobManager / TaskManager", "stage": 3, "row": 0, "width": 160},
+    {"id": "result", "type": "cloud", "label": "Snapshot Result", "sublabel": "RustFS path + CR status", "stage": 3, "row": 1, "width": 180},
+    {"id": "status", "type": "frontend", "label": "Status Projection", "sublabel": "normalized CLI / HTTP output", "stage": 4, "row": 0, "width": 180}
+  ],
+  "flows": [
+    {"id": "d1", "from": "request", "to": "resource", "label": "apply", "variant": "emphasis", "route": "straight"},
+    {"id": "d2", "from": "request", "to": "snapshot", "label": "snapshot request", "variant": "emphasis", "route": "vertical-channel"},
+    {"id": "d3", "from": "resource", "to": "operator", "label": "desired state", "variant": "emphasis", "route": "straight", "labelAt": [350, 205]},
+    {"id": "d4", "from": "snapshot", "to": "operator", "label": "snapshot CR", "route": "vertical-channel", "labelAt": [540, 340]},
+    {"id": "d5", "from": "operator", "to": "job", "label": "reconcile", "variant": "emphasis", "route": "straight", "labelAt": [600, 110]},
+    {"id": "d6", "from": "operator", "to": "result", "label": "checkpoint / savepoint", "route": "bottom-channel", "labelAt": [650, 340]},
+    {"id": "d7", "from": "job", "to": "status", "label": "Job state", "variant": "emphasis", "route": "straight", "labelAt": [840, 205]},
+    {"id": "d8", "from": "result", "to": "status", "label": "path + snapshot state", "route": "vertical-channel", "labelAt": [950, 340]}
+  ]
+}

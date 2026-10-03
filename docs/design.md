@@ -21,6 +21,11 @@ Flink Kubernetes Operator
 FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 ```
 
+对应的可交互图：
+
+- [架构图](diagrams/architecture.html)
+- [数据流图](diagrams/dataflow.html)
+
 ## 资源边界
 
 | 资源 | 用途 |
