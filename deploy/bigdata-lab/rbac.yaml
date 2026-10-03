@@ -29,6 +29,8 @@ rules:
       - flinkdeployments
       - flinksessionjobs
       - flinkstatesnapshots
+      - flinkoperations
+      - flinkoperationlocks
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -46,7 +48,7 @@ roleRef:
   name: zio-flink-operator
 ---
 # KubeSphere Jenkins agents run in this namespace. This binding lets the
-# pipeline apply only this namespace's service and Deployment resources.
+# pipeline apply the namespace resources and bootstrap the two control-plane CRDs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -60,3 +62,25 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: zio-flink-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zio-flink-operator-pipeline-crd-installer
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zio-flink-operator-pipeline-crd-installer
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: kubesphere-devops-worker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zio-flink-operator-pipeline-crd-installer

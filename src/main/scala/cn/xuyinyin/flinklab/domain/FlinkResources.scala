@@ -86,7 +86,7 @@ final case class FlinkStateSnapshotSpec(
       "kind" -> (targetKind match
         case ResourceKind.Deployment => "FlinkDeployment"
         case ResourceKind.SessionJob => "FlinkSessionJob"
-        case ResourceKind.StateSnapshot => throw IllegalArgumentException("state snapshot cannot target a state snapshot")),
+        case ResourceKind.StateSnapshot | ResourceKind.Operation | ResourceKind.OperationLock => throw IllegalArgumentException("state snapshot target must be a Flink job resource")),
       "name" -> targetName.nameValue
     )
     val spec = Obj("jobReference" -> jobReference)

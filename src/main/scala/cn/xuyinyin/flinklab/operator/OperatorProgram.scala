@@ -54,6 +54,8 @@ object OperatorProgram:
             _ <- Console.printLine(output.trim)
           yield ()
         }
+      case Command.Upgrade(_, _) | Command.Resume(_, _) | Command.Restart(_, _) =>
+        ZIO.fail(IllegalArgumentException("typed mutating commands require the AsyncOperationWorker"))
 
   private final case class ResourceToApply(namespace: Namespace, json: String)
 
@@ -89,6 +91,8 @@ object OperatorProgram:
         val snapshotType = SnapshotType.parse(options.getOrElse("snapshot-type", "savepoint"))
           .fold(message => throw IllegalArgumentException(message), identity)
         ResourceToApply(namespace, FlinkResources.render(FlinkStateSnapshotSpec(namespace, name, targetKind, targetName, snapshotType).resource))
+      case ResourceKind.Operation | ResourceKind.OperationLock =>
+        throw IllegalArgumentException("operation resources are managed by the control plane")
 
   private def resourceIdentity(kind: ResourceKind, options: Map[String, String]): IO[Throwable, (Namespace, String)] =
     ZIO.attempt {
@@ -133,7 +137,7 @@ object OperatorProgram:
     ujson.Obj("operationId" -> accepted.operationId.operationIdValue, "requestId" -> accepted.requestId.requestIdValue, "state" -> "ACCEPTED", "acceptedAt" -> accepted.acceptedAt.toString).render()
 
   def executeWithWorker(command: Command): ZIO[KubernetesApi & AsyncOperationWorker, Throwable, Unit] = command match
-    case Command.Apply(_, _, false) =>
+    case Command.Apply(_, _, false) | Command.Upgrade(_, _) | Command.Resume(_, _) | Command.Restart(_, _) =>
       FlinkOperationFactory.fromCommand(command) match
         case Left(message) => ZIO.fail(IllegalArgumentException(message))
         case Right(operation) =>
@@ -148,6 +152,7 @@ object OperatorProgram:
       case ResourceKind.Deployment => "word-count"
       case ResourceKind.SessionJob => "word-count-job"
       case ResourceKind.StateSnapshot => "snapshot-1"
+      case ResourceKind.Operation | ResourceKind.OperationLock => throw IllegalArgumentException("operation resources are managed by the control plane")
 
   private val help =
     """ZIO + Flink Kubernetes Operator Lab
@@ -156,6 +161,9 @@ Commands:
   serve
   render <deployment|session-job|state-snapshot> [options]
   apply  <deployment|session-job|state-snapshot> [options] [--dry-run]
+  upgrade deployment --name VALUE [options]
+  resume deployment --name VALUE
+  restart deployment --name VALUE [--upgrade-mode VALUE] [--fallback VALUE]
   watch <deployment|session-job|state-snapshot> [options]
   savepoint <deployment|session-job> --nonce VALUE [options] (legacy)
   suspend-savepoint <deployment|session-job> [options] (legacy)
@@ -176,4 +184,5 @@ Options:
   --target-kind deployment|session-job (state-snapshot only)
   --target-name VALUE (state-snapshot only)
   --snapshot-type savepoint|checkpoint (state-snapshot only)
+  --fallback forbidden|allow-last-state
 """

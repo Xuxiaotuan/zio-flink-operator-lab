@@ -25,5 +25,8 @@ object CommandSpec extends ZIOSpecDefault:
       },
       test("rejects unknown options") {
         assertTrue(Command.parse(List("status", "deployment", "--name", "orders", "--typo", "value")).left.exists(_.contains("unknown option")))
+      },
+      test("parses typed upgrade") {
+        assertTrue(Command.parse(List("upgrade", "deployment", "--name", "orders", "--upgrade-mode", "savepoint", "--fallback", "forbidden")).exists(_.isInstanceOf[Command.Upgrade]))
       }
     )

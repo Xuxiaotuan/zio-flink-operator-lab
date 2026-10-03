@@ -18,5 +18,9 @@ object OperationFactorySpec extends ZIOSpecDefault:
     test("rejects a misspelled state protection instead of defaulting to stateless") {
       val command = Command.Apply(ResourceKind.Deployment, Map("name" -> "orders", "upgrade-mode" -> "savpoint"), dryRun = false)
       assertTrue(FlinkOperationFactory.fromCommand(command).left.exists(_.contains("unknown state protection")))
+    },
+    test("turns upgrade into a policy carrying operation") {
+      val command = Command.Upgrade(ResourceKind.Deployment, Map("name" -> "orders", "upgrade-mode" -> "savepoint", "fallback" -> "forbidden"))
+      assertTrue(FlinkOperationFactory.fromCommand(command).exists(_.isInstanceOf[FlinkOperation.Upgrade]))
     }
   )

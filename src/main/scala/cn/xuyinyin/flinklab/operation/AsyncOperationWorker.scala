@@ -27,7 +27,8 @@ final class DefaultAsyncOperationWorker(
     verifier: VerificationEngine,
     store: OperationStore,
     mutex: OperationMutex,
-    policy: PolicyEngine = new DefaultPolicyEngine
+    policy: PolicyEngine = new DefaultPolicyEngine,
+    coordinator: ResourceCoordinator = InMemoryResourceCoordinator
 ) extends AsyncOperationWorker:
   private val controlPlane = new DefaultFlinkControlPlane(store)
 
@@ -40,6 +41,14 @@ final class DefaultAsyncOperationWorker(
   override def process(id: OperationId): IO[ControlPlaneError, Operation] = mutex.withPermit {
     for
       current <- getRequired(id)
+      completed <- coordinator.withLock(current.resource, id)(runOperation(id, current))
+    yield completed
+  }.catchAll { error =>
+    terminalize(id, error) *> ZIO.fail(error)
+  }
+
+  private def runOperation(id: OperationId, current: Operation): IO[ControlPlaneError, Operation] =
+    for
       _ <- transition(id, OperationEvent.ValidationStarted(Instant.now()))
       observed <- currentObservation(current)
       validated <- policy.validate(current.command, observed)
@@ -63,9 +72,6 @@ final class DefaultAsyncOperationWorker(
             result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now()))
           yield result
     yield completed
-  }.catchAll { error =>
-    terminalize(id, error) *> ZIO.fail(error)
-  }
 
   private def getRequired(id: OperationId): IO[ControlPlaneError, Operation] =
     store.get(id).flatMap(ZIO.fromOption(_).orElseFail(ControlPlaneError.OperationNotFound(id)))
@@ -158,12 +164,13 @@ final class DefaultAsyncOperationWorker(
     }.getOrElse(None -> None)
 
 object AsyncOperationWorker:
-  val live: ZLayer[KubernetesApi & OperationStore & PolicyEngine, Nothing, AsyncOperationWorker] =
+  val live: ZLayer[KubernetesApi & OperationStore & PolicyEngine & ResourceCoordinator, Nothing, AsyncOperationWorker] =
     ZLayer.fromZIO {
       for
         api <- ZIO.service[KubernetesApi]
         store <- ZIO.service[OperationStore]
         policy <- ZIO.service[PolicyEngine]
+        coordinator <- ZIO.service[ResourceCoordinator]
         mutex <- OperationMutex.make
-      yield new DefaultAsyncOperationWorker(api, cn.xuyinyin.flinklab.operator.observer.ResourceObserver.live(api), DefaultVerificationEngine, store, mutex, policy)
+      yield new DefaultAsyncOperationWorker(api, cn.xuyinyin.flinklab.operator.observer.ResourceObserver.live(api), DefaultVerificationEngine, store, mutex, policy, coordinator)
     }

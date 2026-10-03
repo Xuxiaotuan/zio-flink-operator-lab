@@ -50,7 +50,7 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 | `OperationEvent` | 不可变操作历史，记录提交、观察、快照、验证和不确定结果 |
 | `RequestId`、`OperationId`、`ResourceUid` | 分离请求重试、控制面操作和 Kubernetes 资源实例 |
 
-`FlinkOperationFactory` 把 CLI apply 和 HTTP 写请求转换成同一个 `FlinkOperation`。`PolicyEngine` 负责升级策略校验；`AsyncOperationWorker` 负责状态推进、Kubernetes 提交、观察和验证。`OperationStore` 提供 Ref 内存实现和 PostgreSQL 实现，服务通过 `ZIO_FLINK_OPERATION_STORE=postgres` 选择共享操作审计。Kubernetes 适配器仍是唯一提交边界。
+`FlinkOperationFactory` 把 CLI apply 和 HTTP 写请求转换成同一个 `FlinkOperation`。`PolicyEngine` 负责升级策略校验；`AsyncOperationWorker` 负责状态推进、Kubernetes 提交、观察和验证。`OperationStore` 默认使用 Kubernetes `FlinkOperation` CR，`ZIO_FLINK_OPERATION_STORE=postgres` 时才使用 PostgreSQL，`memory` 只用于单进程测试。Kubernetes 适配器仍是唯一提交边界。
 
 请求接受和操作完成是两个结果。HTTP/CLI 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。PolicyEngine 不通过时不会写 Kubernetes。验证会持续观察，只有 `Evidence` 同时满足资源身份、UID、提交后的 generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；确定失败进入 `Failed`，等待超时进入 `TimedOut`，提交请求结果不确定进入 `Uncertain`。
 
@@ -61,7 +61,7 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 1. CLI apply 和 HTTP 写请求统一生成 `FlinkOperation`，服务返回 `operationId`。
 2. `ResourceObserver` 先 list，再用 list 的 `resourceVersion` watch；收到 410 Gone 会重新 list。
 3. `VerificationEngine` 使用 `Evidence` 校验 UID、generation、observedGeneration、reconciliation 和 Job 状态。
-4. `AsyncOperationWorker` 执行提交、观察、验证和失败转移；`OperationMutex` 保护进程内副作用，PostgreSQL 行锁保护共享操作记录。当前还没有跨副本、按 Flink 资源粒度的分布式互斥锁，因此同一资源的并发操作仍需要上层串行化。
+4. `AsyncOperationWorker` 执行提交、观察、验证和失败转移；Kubernetes `FlinkOperationLock` CR 保护跨副本的资源级互斥，`OperationMutex` 保护进程内副作用。PostgreSQL 后端使用行锁保护共享操作记录。
 5. 真实 checkpoint/savepoint 路径和恢复结果仍需目标集群带 RustFS 插件和 Secret 的作业验收。
 
 ## 资源边界
@@ -96,15 +96,15 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 `ZStream` 消费 Kubernetes watch 事件，reducer 按事件到达顺序维护状态。`Scope` 负责关闭 watch，`Schedule` 负责有界重试，`ZLayer` 负责组装 Kubernetes 客户端。HTTP 服务另外运行一个 ZIO 后台轮询器，按固定间隔 list 三类 Flink CR，把状态合并到共享状态后端。
 
-资源版本始终按不透明字符串处理。`ResourceObserver` 已实现 list → resourceVersion watch 和 410 Gone relist；resourceVersion 按不透明字符串传递。跨进程操作状态由 PostgreSQL OperationStore 持久化，`requestId` 有唯一约束并作为幂等键；数据库读取或反序列化失败会返回 `StoreFailure`，不会伪装成“没有 operation”。watch 游标在每次 relist 后从 API Server 重新获得。
+资源版本始终按不透明字符串处理。`ResourceObserver` 已实现 list → resourceVersion watch 和 410 Gone relist；resourceVersion 按不透明字符串传递。Kubernetes 模式的跨进程操作状态由 `FlinkOperation` CR 持久化，`requestId` 通过 CR label 查询实现幂等；显式选择 PostgreSQL 时才使用 PostgreSQL OperationStore。数据库读取或反序列化失败会返回 `StoreFailure`，不会伪装成“没有 operation”。watch 游标在每次 relist 后从 API Server 重新获得。
 
 ## 多副本与状态后端
 
-HTTP 副本不保存本地会话状态，Service 可以把请求路由到任意副本。资源状态后端由 `ZIO_FLINK_STATE_BACKEND` 选择，操作审计由 `ZIO_FLINK_OPERATION_STORE` 选择；Kubernetes 多副本要设为 `postgres` 才能共享 operation 生命周期：
+HTTP 副本不保存本地会话状态，Service 可以把请求路由到任意副本。资源状态后端由 `ZIO_FLINK_STATE_BACKEND` 选择，操作审计由 `ZIO_FLINK_OPERATION_STORE` 选择；Kubernetes 模式默认使用 API Server 中的 CR 共享 operation 生命周期：
 
 | 模式 | 统一状态来源 | 用途 |
 | --- | --- | --- |
-| `kubernetes` | FlinkDeployment、FlinkSessionJob、FlinkStateSnapshot CR | Kubernetes 部署默认模式，CR 是事实源，副本直接读取 API Server |
+| `kubernetes` | FlinkDeployment、FlinkSessionJob、FlinkStateSnapshot、FlinkOperation CR | Kubernetes 部署默认模式，CR 是事实源，副本直接读取 API Server |
 | `postgres` | `zio_flink_operator_state` 表 | 裸机运行时保存最新状态、资源版本和最多 100 条生命周期事件，副本读取同一张表 |
 
 PostgreSQL 只保存状态观测和资源版本，不保存 Flink checkpoint/savepoint 二进制。savepoint 仍由 Flink 运行时写入 RustFS。两种模式都需要 Kubernetes API，因为本项目的提交和 Operator 状态来源始终是 Kubernetes API。
@@ -114,6 +114,8 @@ PostgreSQL 只保存状态观测和资源版本，不保存 Flink checkpoint/sav
 - `GET /v1/state?namespace=<namespace>`：列出当前后端中的状态记录。
 - `GET /v1/state/<kind>/<name>?namespace=<namespace>`：读取一条状态记录。
 
-Kubernetes 模式不会额外引入 ConfigMap 缓存，避免 CR 与缓存出现双重事实源。多副本部署必须为操作审计配置 PostgreSQL；没有配置时仅适合单进程学习和测试。裸机 PostgreSQL 模式的 upsert 使用 Kubernetes `resourceVersion` 防止较旧观测覆盖较新观测。
+Kubernetes 模式不会额外引入 ConfigMap 缓存，避免 CR 与缓存出现双重事实源。裸机或外部审计场景可以显式配置 PostgreSQL；裸机 PostgreSQL 模式的 upsert 使用 Kubernetes `resourceVersion` 防止较旧观测覆盖较新观测。
+
+当前仍未完成：目标集群的真实 PipelineRun、Flink Operator reconcile、checkpoint/savepoint 和跨节点故障演练尚未在本轮重新验证；FallbackDetected/Superseded 的完整生产语义也仍需补充运行证据。单元测试、构建和 kustomize 渲染不能替代这些现场验收。
 
 本地 OrbStack 只有一个节点，两个 Pod 只能证明进程副本和 Service 路由。目标集群清单使用一个 NodePort Service、两个副本、hostname 反亲和和 `DoNotSchedule`；两台机器的跨节点调度需要目标集群可达、节点标签正常、Operator 已安装，并通过滚动重启和状态接口验证。每个副本都轮询同一 Kubernetes API，状态统一来自 CR；这会按副本数增加 list 请求量，后续高规模场景应增加 leader election 或集中式 watch。

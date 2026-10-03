@@ -249,6 +249,8 @@ object ControlPlaneError:
     def message: String = reason
   final case class UncertainFailure(reason: String) extends ControlPlaneError:
     def message: String = reason
+  final case class ResourceBusy(resource: ResourceRef) extends ControlPlaneError:
+    def message: String = s"resource is already being mutated: ${resource.namespace.namespaceValue}/${resource.kind.apiResource}/${resource.name.nameValue}"
   final case class StoreFailure(reason: String) extends ControlPlaneError:
     def message: String = reason
 

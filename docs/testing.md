@@ -11,7 +11,9 @@ sbt -batch assembly
 mvn -B -f job/pom.xml package -DskipTests
 ```
 
-当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、CLI/HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
+当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、CLI/HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
+
+未完成项：本轮没有重新执行目标集群 PipelineRun，也没有把真实 Flink Operator reconcile、checkpoint/savepoint、跨节点故障恢复和完整 FallbackDetected/Superseded 语义作为通过条件。以下测试结果只说明代码级契约和本地构建通过，不能替代现场验收。
 - 覆盖 CLI/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
 - Maven Job：应以本轮命令的 `BUILD SUCCESS` 为准。
 

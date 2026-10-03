@@ -59,6 +59,8 @@ spec:
               value: s3://flink-savepoints/zio-flink-operator/bigdata-lab/
             - name: ZIO_FLINK_STATE_BACKEND
               value: kubernetes
+            - name: ZIO_FLINK_OPERATION_STORE
+              value: kubernetes
             - name: ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS
               value: "15"
             - name: ZIO_FLINK_SERVER_HOST

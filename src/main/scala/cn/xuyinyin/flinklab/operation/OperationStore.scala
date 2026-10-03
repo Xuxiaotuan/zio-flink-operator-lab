@@ -1,6 +1,7 @@
 package cn.xuyinyin.flinklab.operation
 
 import cn.xuyinyin.flinklab.domain.*
+import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import zio.*
 
 trait OperationStore:
@@ -41,12 +42,13 @@ object InMemoryOperationStore:
     ZLayer.fromZIO(make)
 
 object OperationStore:
-  val live: ZLayer[Any, Throwable, OperationStore] =
+  val live: ZLayer[KubernetesApi, Throwable, OperationStore] =
     ZLayer.fromZIO {
       sys.env.get("ZIO_FLINK_OPERATION_STORE").map(_.trim.toLowerCase) match
         case Some("postgres") | Some("postgresql") =>
           ZIO.fromEither(OperationStoreSettings.fromEnv(sys.env).left.map(IllegalArgumentException(_))).map(new PostgresOperationStore(_))
-        case _ => InMemoryOperationStore.make.map(identity[OperationStore])
+        case Some("memory") | Some("in-memory") => InMemoryOperationStore.make.map(identity[OperationStore])
+        case _ => ZIO.service[KubernetesApi].map(new KubernetesOperationStore(_))
     }
 
 final case class AcceptedOperation(

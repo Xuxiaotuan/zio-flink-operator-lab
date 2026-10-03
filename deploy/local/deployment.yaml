@@ -57,6 +57,8 @@ spec:
               value: s3://flink-savepoints/zio-flink-operator/local/orbstack/flink-lineage-test/
             - name: ZIO_FLINK_STATE_BACKEND
               value: kubernetes
+            - name: ZIO_FLINK_OPERATION_STORE
+              value: kubernetes
             - name: ZIO_FLINK_SERVER_HOST
               value: 0.0.0.0
             - name: ZIO_FLINK_SERVER_PORT

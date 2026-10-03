@@ -12,6 +12,8 @@ import zio.stream.*
 
 trait KubernetesApi:
   def apply(namespace: Namespace, resource: String, dryRun: Boolean): IO[Throwable, String]
+  def create(namespace: Namespace, resource: String): IO[Throwable, String] =
+    ZIO.fail(UnsupportedOperationException("create is not implemented by this KubernetesApi"))
   def list(namespace: Namespace, kind: ResourceKind): IO[Throwable, String] =
     ZIO.fail(UnsupportedOperationException("list is not implemented by this KubernetesApi"))
   def get(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
@@ -64,6 +66,13 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
         body = Some(resource),
         contentType = "application/apply-patch+yaml"
       )
+    yield result
+
+  override def create(namespace: Namespace, resource: String): IO[Throwable, String] =
+    for
+      value <- ZIO.attempt(ujson.read(resource))
+      kind <- ZIO.fromEither(value.obj.get("kind").flatMap(_.strOpt).toRight(IllegalArgumentException("Flink resource kind is required")))
+      result <- request("POST", collectionPath(namespace, apiResource(kind)), body = Some(resource), contentType = "application/json")
     yield result
 
   override def get(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String] =
@@ -139,12 +148,16 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
       case ResourceKind.Deployment => "flinkdeployments"
       case ResourceKind.SessionJob => "flinksessionjobs"
       case ResourceKind.StateSnapshot => "flinkstatesnapshots"
+      case ResourceKind.Operation => "flinkoperations"
+      case ResourceKind.OperationLock => "flinkoperationlocks"
 
   private def apiResource(kind: String): String =
     kind match
       case "FlinkDeployment" => "flinkdeployments"
       case "FlinkSessionJob" => "flinksessionjobs"
       case "FlinkStateSnapshot" => "flinkstatesnapshots"
+      case "FlinkOperation" => "flinkoperations"
+      case "FlinkOperationLock" => "flinkoperationlocks"
       case other => throw IllegalArgumentException(s"unsupported Flink custom resource kind: $other")
 
   private def resourcePath(namespace: Namespace, resource: String, name: String): String =

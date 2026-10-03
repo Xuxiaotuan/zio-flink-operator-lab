@@ -80,6 +80,34 @@ object KubernetesHttpApi:
           operation = FlinkOperation.Suspend(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), SuspendPolicy.KeepState)
           accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
         yield acceptedResponse(accepted, 202)
+      case ("POST", "v1" :: "deployments" :: name :: "upgrade" :: Nil) =>
+        for
+          body <- parseJson(request.body)
+          namespace <- namespaceFor(body, request.query, settings)
+          deploymentName <- deploymentName(name)
+          specOperation <- ZIO.fromEither(FlinkOperationFactory.fromDeploymentJson(namespace.namespaceValue, prepareResource(body, namespace, settings.defaultSavepointDirectory)).left.map(IllegalArgumentException(_)))
+          spec <- specOperation match
+            case FlinkOperation.Deploy(value) if value.name.nameValue == deploymentName => ZIO.succeed(value)
+            case _ => ZIO.fail(IllegalArgumentException("upgrade body must describe the deployment named in the URL"))
+          policy <- policyFrom(request.query)
+          operation = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), spec, policy)
+          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+        yield acceptedResponse(accepted, 202)
+      case ("POST", "v1" :: "deployments" :: name :: "resume" :: Nil) =>
+        for
+          namespace <- namespaceFrom(request.query, settings)
+          deploymentName <- deploymentName(name)
+          operation = FlinkOperation.Resume(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+        yield acceptedResponse(accepted, 202)
+      case ("POST", "v1" :: "deployments" :: name :: "restart" :: Nil) =>
+        for
+          namespace <- namespaceFrom(request.query, settings)
+          deploymentName <- deploymentName(name)
+          policy <- policyFrom(request.query)
+          operation = FlinkOperation.Restart(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), policy)
+          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+        yield acceptedResponse(accepted, 202)
       case ("DELETE", "v1" :: "deployments" :: name :: Nil) =>
         for
           namespace <- namespaceFrom(request.query, settings)
@@ -340,10 +368,25 @@ object KubernetesHttpApi:
         Option.when(number == asLong.toDouble)(asLong.toString)
       }
     )
+
     ZIO.fromEither(
       nonceValue.toRight(IllegalArgumentException("request body must contain nonce as a string or safe integer"))
         .flatMap(raw => scala.util.Try(raw.toLong).toEither.left.map(_ => IllegalArgumentException("nonce must be a Long")))
     )
+
+  private def policyFrom(query: Map[String, String]): IO[Throwable, UpgradePolicy] =
+    for
+      protection <- ZIO.fromEither(StateProtection.parse(query.get("upgradeMode").orElse(query.get("upgrade-mode")).getOrElse("stateless")).left.map(IllegalArgumentException(_)))
+      fallback <- ZIO.fromEither(query.get("fallback").map(parseFallback).getOrElse(Right(FallbackPolicy.Forbidden)).left.map(IllegalArgumentException(_)))
+      policy = UpgradePolicy(protection, fallback)
+      _ <- ZIO.fromEither(policy.validate.left.map(error => IllegalArgumentException(error.message)))
+    yield policy
+
+  private def parseFallback(value: String): Either[String, FallbackPolicy] =
+    value.trim.toLowerCase match
+      case "forbidden" => Right(FallbackPolicy.Forbidden)
+      case "allow-last-state" | "allowlaststate" => Right(FallbackPolicy.AllowLastState)
+      case other => Left(s"unknown fallback policy: $other (use forbidden or allow-last-state)")
 
   private def persist(store: StateStore, record: StateRecord): IO[Throwable, Unit] =
     store.getJournal(record.key).flatMap(previous => store.putJournal(StateJournal.merge(previous, record)))

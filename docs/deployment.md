@@ -11,7 +11,7 @@ Client -> Service -> zio-flink-operator replicas -> Kubernetes API Server
                                       Flink Kubernetes Operator
 ```
 
-HTTP 副本处理请求；每个写操作由异步 worker 通过 ResourceObserver 观察目标 CR。操作审计必须使用共享 PostgreSQL，避免副本各自持有内存状态。CLI watch 仍用于显式观察资源。
+HTTP 副本处理请求；每个写操作由异步 worker 通过 ResourceObserver 观察目标 CR。Kubernetes 部署默认把操作审计写入 `FlinkOperation` CR，副本通过同一个 API Server 共享状态；裸机或外部审计场景才显式选择 PostgreSQL。CLI watch 仍用于显式观察资源。
 
 ## 本地 Kubernetes
 
@@ -58,7 +58,7 @@ curl -fsS http://<任一节点>:30882/healthz
 curl -fsS 'http://<任一节点>:30882/v1/state?namespace=bigdata-lab'
 ```
 
-两个副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态统一来自 CR；操作状态统一来自 PostgreSQL OperationStore。每个副本都会轮询，因此状态轮询流量随副本数线性增加；当前版本没有 leader election。
+两个副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态和 operation 生命周期默认都来自 Kubernetes CR；每个副本都会轮询，因此状态轮询流量随副本数线性增加。`FlinkOperationLock` CR 按目标资源提供跨副本互斥。设置 `ZIO_FLINK_OPERATION_STORE=postgres` 后，只有 operation 审计切换到 PostgreSQL，Flink 资源状态仍来自 Kubernetes。
 
 ## RustFS
 

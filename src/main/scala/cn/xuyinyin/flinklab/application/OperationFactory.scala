@@ -12,6 +12,16 @@ object FlinkOperationFactory:
         case ResourceKind.Deployment => deploymentFromOptions(options).map(FlinkOperation.Deploy.apply)
         case ResourceKind.StateSnapshot => snapshotFromOptions(options).map { case (target, policy) => FlinkOperation.Snapshot(target, policy) }
         case ResourceKind.SessionJob => Left("session-job operations are not yet represented by the typed control-plane command")
+        case ResourceKind.Operation | ResourceKind.OperationLock => Left("operation resources are managed by the control plane")
+    case Command.Upgrade(kind, options) if kind == ResourceKind.Deployment =>
+      for
+        spec <- deploymentFromOptions(options)
+        target <- targetFromOptions(options)
+        policy <- upgradePolicyFromOptions(options)
+      yield FlinkOperation.Upgrade(target, spec, policy)
+    case Command.Resume(kind, options) if kind == ResourceKind.Deployment => targetFromOptions(options).map(FlinkOperation.Resume.apply)
+    case Command.Restart(kind, options) if kind == ResourceKind.Deployment =>
+      for target <- targetFromOptions(options); policy <- upgradePolicyFromOptions(options) yield FlinkOperation.Restart(target, policy)
     case _ => Left("only apply commands produce a FlinkOperation")
 
   def fromDeploymentJson(namespace: String, raw: String): Either[String, FlinkOperation] =
@@ -69,6 +79,26 @@ object FlinkOperationFactory:
       snapshotType <- SnapshotType.parse(options.getOrElse("snapshot-type", "savepoint"))
       snapshotName <- options.get("name").map(DeploymentName.from).map(_.map(Some(_))).getOrElse(Right(None))
     yield (ResourceRef(namespace, kind, name), SnapshotPolicy(snapshotType, snapshotName))
+
+  private def targetFromOptions(options: Map[String, String]): Either[String, ResourceRef] =
+    for
+      namespace <- Namespace.from(options.getOrElse("namespace", sys.env.getOrElse("FLINK_NAMESPACE", "default")))
+      name <- DeploymentName.from(options.getOrElse("name", "word-count"))
+    yield ResourceRef(namespace, ResourceKind.Deployment, name)
+
+  private def upgradePolicyFromOptions(options: Map[String, String]): Either[String, UpgradePolicy] =
+    for
+      protection <- StateProtection.parse(options.getOrElse("upgrade-mode", "stateless"))
+      fallback <- options.get("fallback").map(parseFallback).getOrElse(Right(FallbackPolicy.Forbidden))
+      policy = UpgradePolicy(protection, fallback)
+      _ <- policy.validate.left.map(_.message)
+    yield policy
+
+  private def parseFallback(value: String): Either[String, FallbackPolicy] =
+    value.trim.toLowerCase match
+      case "forbidden" => Right(FallbackPolicy.Forbidden)
+      case "allow-last-state" | "allowlaststate" => Right(FallbackPolicy.AllowLastState)
+      case other => Left(s"unknown fallback policy: $other (use forbidden or allow-last-state)")
 
   private def parseKind(value: String): Either[String, ResourceKind] =
     value match
