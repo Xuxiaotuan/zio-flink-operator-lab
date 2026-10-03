@@ -11,6 +11,13 @@ object ResourceKind:
       case "state-snapshot" => Right(StateSnapshot)
       case other => Left(s"unknown resource kind: $other (use deployment, session-job or state-snapshot)")
 
+  def fromApiResource(value: String): Option[ResourceKind] =
+    value match
+      case "flinkdeployment" | "flinkdeployments" => Some(ResourceKind.Deployment)
+      case "flinksessionjob" | "flinksessionjobs" => Some(ResourceKind.SessionJob)
+      case "flinkstatesnapshot" | "flinkstatesnapshots" => Some(ResourceKind.StateSnapshot)
+      case _ => None
+
   extension (kind: ResourceKind)
     def apiResource: String = kind match
       case ResourceKind.Deployment => "flinkdeployment"

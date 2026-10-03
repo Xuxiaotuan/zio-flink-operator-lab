@@ -13,11 +13,11 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果：
 
-- SBT：40 tests passed，0 failed，0 ignored。
-- 覆盖 CLI/domain、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
+- SBT：45 tests passed，0 failed，0 ignored。
+- 覆盖 CLI/domain、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
 - Maven Job：应以本轮命令的 `BUILD SUCCESS` 为准。
 
-测试按职责分组：CLI 4、domain 3、fake Kubernetes API 3、Kubernetes HTTP contract 5、savepoint patch 3、watch model 5、watch stream/retry 11、HTTP 控制面 6。
+当前测试按职责分组：CLI 4、domain 3、fake Kubernetes API 3、Kubernetes HTTP contract 5、savepoint patch 3、watch model 5、watch stream/retry 11、HTTP 控制面 7、状态后端配置 4。
 
 这些测试默认不连接真实 Kubernetes。HTTP contract test 使用本地 HTTP server，只验证 Kubernetes Java Client 的请求协议。
 

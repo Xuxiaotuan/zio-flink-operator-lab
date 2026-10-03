@@ -2,7 +2,7 @@
 
 ## 运行形态
 
-HTTP 控制面是无状态服务。多个副本共享 Kubernetes API Server 中的 CR，不共享本地状态，也不使用 RustFS 做锁。
+HTTP 控制面不保存本地会话状态。多个副本通过 Kubernetes CR 或 PostgreSQL 状态后端读取统一观测，不使用 RustFS 做锁。
 
 ```text
 Client -> Service -> zio-flink-operator replicas -> Kubernetes API Server
@@ -26,7 +26,9 @@ kubectl -n flink-lineage-test rollout status deployment/zio-flink-operator --tim
 kubectl -n flink-lineage-test get pods -l app.kubernetes.io/name=zio-flink-operator -o wide
 ```
 
-本地 OrbStack 使用本机镜像和 `imagePullPolicy: IfNotPresent`。当前本地环境是单节点；两个副本证明进程复制和 Service 路由，不证明跨节点高可用。
+本地 OrbStack 使用本机镜像和 `imagePullPolicy: IfNotPresent`。当前本地环境是单节点；两个副本证明进程复制和 Service 路由，不证明跨节点高可用。`deploy/local` 设置 `ZIO_FLINK_STATE_BACKEND=kubernetes`。
+
+在两台或更多节点的集群中，Deployment 的副本使用 hostname 反亲和偏好分散调度；Service 不使用会话亲和性，任一副本都能从 API Server 读取相同 CR 状态。
 
 检查服务：
 
@@ -66,6 +68,22 @@ sbt "run serve"
 
 容器入口已经是 `serve`。服务默认监听 `0.0.0.0:8080`，相关接口见 [状态监控](monitoring.md)。
 
+## 裸机 PostgreSQL 状态
+
+裸机启动前注入以下环境变量。密码只通过进程环境或 Secret 注入，不写入仓库：
+
+```sh
+export ZIO_FLINK_STATE_BACKEND=postgres
+export POSTGRES_HOST=100.82.226.63
+export POSTGRES_PORT=30660
+export POSTGRES_DB=xxt
+export POSTGRES_USER=root
+export POSTGRES_PASSWORD='由 Secret 注入'
+sbt "run serve"
+```
+
+服务首次启动会创建 `zio_flink_operator_state` 表。表中只保存最新的 CR 状态观测；checkpoint/savepoint 文件仍由 Flink 写入 RustFS。
+
 ## 迁移到目标集群
 
 1. 为目标集群准备匹配版本的 Flink Operator、CRD 和 watched namespace。
@@ -74,4 +92,4 @@ sbt "run serve"
 4. 注入 RustFS endpoint 和 Secret，不把凭据写入清单。
 5. 先 dry-run，再 apply；分别记录 CR 状态、Flink Pod、Job 状态和快照结果。
 
-目标集群需要单独验证 Operator reconcile、checkpoint、savepoint、恢复和多节点调度。本地部署结果不能替代这些证据。
+目标集群需要单独验证 Operator reconcile、checkpoint、savepoint、恢复、跨节点调度和两个副本读取同一状态。本地部署结果不能替代这些证据。

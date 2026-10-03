@@ -60,8 +60,22 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 资源版本始终按不透明字符串处理。当前 watch 支持事件解析、EOF 重连、状态合并和错误传播；可靠的 list → resourceVersion watch、410 Gone relist 和跨重启游标持久化仍需要单独实现和验证。
 
-## 多副本
+## 多副本与状态后端
 
-HTTP 控制面是无状态的。CR 是事实源，副本不共享业务状态，因此可部署多个副本。后台 controller/watch 不在每个 HTTP 副本中自动启动，不需要用 RustFS 做锁。
+HTTP 副本不保存本地会话状态，Service 可以把请求路由到任意副本。状态后端由 `ZIO_FLINK_STATE_BACKEND` 选择：
 
-本地 OrbStack 只有一个节点，两个 Pod 只能证明进程副本和 Service 路由。跨节点高可用需要多节点集群、Operator 高可用配置和独立的运行验证。
+| 模式 | 统一状态来源 | 用途 |
+| --- | --- | --- |
+| `kubernetes` | FlinkDeployment、FlinkSessionJob、FlinkStateSnapshot CR | Kubernetes 部署默认模式，CR 是事实源，副本直接读取 API Server |
+| `postgres` | `zio_flink_operator_state` 表 | 裸机运行时保存最近一次状态观测，副本读取同一张表 |
+
+PostgreSQL 只保存状态观测和资源版本，不保存 Flink checkpoint/savepoint 二进制。savepoint 仍由 Flink 运行时写入 RustFS。两种模式都需要 Kubernetes API，因为本项目的提交和 Operator 状态来源始终是 Kubernetes API。
+
+状态接口：
+
+- `GET /v1/state?namespace=<namespace>`：列出当前后端中的状态记录。
+- `GET /v1/state/<kind>/<name>?namespace=<namespace>`：读取一条状态记录。
+
+Kubernetes 模式不会额外引入 ConfigMap 缓存，避免 CR 与缓存出现双重事实源。裸机 PostgreSQL 模式的 upsert 使用 Kubernetes `resourceVersion` 防止较旧观测覆盖较新观测。
+
+本地 OrbStack 只有一个节点，两个 Pod 只能证明进程副本和 Service 路由。两台机器的跨节点调度需要目标集群可达、节点标签正常、Operator 已安装，并通过滚动重启和状态接口验证。

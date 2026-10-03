@@ -75,5 +75,17 @@ object KubernetesHttpApiSpec extends ZIOSpecDefault:
         deleted.status == 200,
         records.exists(_.startsWith("delete:analytics:flinkstatesnapshot:orders-sp-1"))
       )
+    },
+    test("exposes the Kubernetes CR state backend to every replica") {
+      for
+        fake <- FakeKubernetesApi.make
+        response <- KubernetesHttpApi.handleWith(fake, ApiRequest("GET", "/v1/state", Map("namespace" -> "analytics")), settings)
+        json = ujson.read(response.body)
+      yield assertTrue(
+        response.status == 200,
+        json("backend").str == "kubernetes",
+        json("namespace").str == "analytics",
+        json("items").arr.size == 3
+      )
     }
   )

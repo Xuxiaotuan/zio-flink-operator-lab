@@ -22,6 +22,7 @@ lazy val root = (project in file("."))
       "dev.zio" %% "zio" % "2.1.11",
       "dev.zio" %% "zio-streams" % "2.1.11",
       "io.kubernetes" % "client-java" % "20.0.1",
+      "org.postgresql" % "postgresql" % "42.7.4",
       "com.lihaoyi" %% "ujson" % "4.1.0",
       "dev.zio" %% "zio-test" % "2.1.11" % Test,
       "dev.zio" %% "zio-test-sbt" % "2.1.11" % Test

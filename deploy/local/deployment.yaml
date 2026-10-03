@@ -50,6 +50,8 @@ spec:
               value: "3"
             - name: FLINK_SAVEPOINT_DIRECTORY
               value: s3://flink-savepoints/zio-flink-operator/local/orbstack/flink-lineage-test/
+            - name: ZIO_FLINK_STATE_BACKEND
+              value: kubernetes
             - name: ZIO_FLINK_SERVER_HOST
               value: 0.0.0.0
             - name: ZIO_FLINK_SERVER_PORT
@@ -75,3 +77,12 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: zio-flink-operator

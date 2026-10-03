@@ -33,8 +33,12 @@ curl -fsS 'http://127.0.0.1:18080/v1/deployments/orders/status?namespace=flink-l
 curl -fsS 'http://127.0.0.1:18080/v1/deployments?namespace=flink-lineage-test'
 curl -fsS 'http://127.0.0.1:18080/v1/snapshots/orders-savepoint?namespace=flink-lineage-test'
 curl -fsS 'http://127.0.0.1:18080/v1/snapshots?namespace=flink-lineage-test'
+curl -fsS 'http://127.0.0.1:18080/v1/state?namespace=flink-lineage-test'
+curl -fsS 'http://127.0.0.1:18080/v1/state/deployment/orders?namespace=flink-lineage-test'
 curl -fsS -X DELETE 'http://127.0.0.1:18080/v1/snapshots/orders-savepoint?namespace=flink-lineage-test'
 ```
+
+`/v1/state` 返回当前配置的后端：Kubernetes 模式直接读取三类 Flink CR；PostgreSQL 模式返回最近一次状态观测。它用于检查多个服务副本是否读取同一份状态，不代表替代 Operator 的 CR 状态。
 
 提交 FlinkDeployment 仍使用同一个控制面：
 

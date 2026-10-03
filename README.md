@@ -44,9 +44,21 @@ sbt "run apply state-snapshot --name orders-savepoint --target-kind deployment -
 sbt "run watch state-snapshot --name orders-savepoint --namespace $FLINK_NAMESPACE"
 ```
 
-HTTP 控制面由 `sbt "run serve"` 启动，默认监听 `0.0.0.0:8080`。它提供部署状态、快照创建、列表、查询和删除接口，可部署多个无状态副本。
+HTTP 控制面由 `sbt "run serve"` 启动，默认监听 `0.0.0.0:8080`。它提供部署状态、快照创建、列表、查询和删除接口，可部署多个副本。
 
-状态字段、HTTP 示例、checkpoint/savepoint 边界见 [状态监控](docs/monitoring.md)。
+Kubernetes 部署默认使用 Flink CR 作为统一状态源；裸机部署可将最新状态观测写入 PostgreSQL：
+
+```sh
+export ZIO_FLINK_STATE_BACKEND=postgres
+export POSTGRES_HOST=100.82.226.63
+export POSTGRES_PORT=30660
+export POSTGRES_DB=xxt
+export POSTGRES_USER=root
+export POSTGRES_PASSWORD='由 Secret 注入'
+sbt "run serve"
+```
+
+状态字段、HTTP 示例、统一状态接口和 checkpoint/savepoint 边界见 [状态监控](docs/monitoring.md)。
 
 ## 版本与边界
 

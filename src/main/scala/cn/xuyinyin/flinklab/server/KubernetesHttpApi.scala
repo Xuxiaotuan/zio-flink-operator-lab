@@ -6,6 +6,7 @@ import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.operator.savepoint.SavepointPatch
 import cn.xuyinyin.flinklab.operator.watch.{FlinkStateSnapshotStatus, FlinkStatusSnapshot}
+import cn.xuyinyin.flinklab.state.{KubernetesStateStore, StateKey, StateRecord, StateStore}
 import zio.*
 
 final case class ApiRequest(
@@ -31,13 +32,16 @@ object KubernetesHttpSettings:
 
 /** Stateless HTTP facade. Every mutating operation still goes through KubernetesApi. */
 object KubernetesHttpApi:
-  def handle(request: ApiRequest, settings: KubernetesHttpSettings = KubernetesHttpSettings()): ZIO[KubernetesApi, Nothing, ApiResponse] =
+  def handle(request: ApiRequest, settings: KubernetesHttpSettings = KubernetesHttpSettings()): ZIO[KubernetesApi & StateStore, Nothing, ApiResponse] =
     route(request, settings).catchAll(error => ZIO.succeed(errorResponse(error)))
 
   def handleWith(api: KubernetesApi, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
-    handle(request, settings).provide(ZLayer.succeed(api))
+    handleWith(api, new KubernetesStateStore(api), request, settings)
 
-  private def route(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi, Throwable, ApiResponse] =
+  def handleWith(api: KubernetesApi, store: StateStore, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
+    handle(request, settings).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store)))
+
+  private def route(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
       case ("GET", "healthz" :: Nil) | ("GET", "readyz" :: Nil) =>
         ZIO.succeed(ok("{\"status\":\"ok\"}"))
@@ -50,7 +54,7 @@ object KubernetesHttpApi:
       case ("GET", "v1" :: "deployments" :: name :: "status" :: Nil) =>
         deploymentStatus(request, settings, name)
       case ("DELETE", "v1" :: "deployments" :: name :: Nil) =>
-        withDeployment(request, settings, name)((api, namespace, kind, resourceName) => api.delete(namespace, kind, resourceName))
+        deleteResource(request, settings, name, ResourceKind.Deployment)
       case ("POST", "v1" :: "deployments" :: name :: "savepoint" :: Nil) =>
         savepoint(request, settings, name, suspended = false)
       case ("POST", "v1" :: "deployments" :: name :: "suspend-savepoint" :: Nil) =>
@@ -62,10 +66,14 @@ object KubernetesHttpApi:
       case ("GET", "v1" :: "snapshots" :: name :: Nil) =>
         snapshotStatus(request, settings, name)
       case ("DELETE", "v1" :: "snapshots" :: name :: Nil) =>
-        withSnapshot(request, settings, name)((api, namespace, resourceName) => api.delete(namespace, ResourceKind.StateSnapshot, resourceName))
+        deleteResource(request, settings, name, ResourceKind.StateSnapshot)
+      case ("GET", "v1" :: "state" :: Nil) =>
+        listState(request, settings)
+      case ("GET", "v1" :: "state" :: kind :: name :: Nil) =>
+        getState(request, settings, kind, name)
       case _ => ZIO.succeed(ApiResponse(404, errorJson("route not found")))
 
-  private def applyDeployment(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi, Throwable, ApiResponse] =
+  private def applyDeployment(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       resource <- parseJson(request.body)
       namespace <- namespaceFor(resource, request.query, settings)
@@ -80,11 +88,13 @@ object KubernetesHttpApi:
       kind: ResourceKind,
       parse: String => Either[String, A],
       render: A => ujson.Value
-  ): ZIO[KubernetesApi, Throwable, ApiResponse] =
+  ): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       namespace <- namespaceFrom(request.query, settings)
       raw <- ZIO.serviceWithZIO[KubernetesApi](_.list(namespace, kind))
       collection <- parseCollection(raw, parse, render)
+      records <- ZIO.fromEither(StateRecord.fromCollection(namespace, kind, raw).left.map(IllegalArgumentException(_)))
+      _ <- ZIO.serviceWithZIO[StateStore](store => ZIO.foreachDiscard(records)(store.put))
     yield ok(collection.render())
 
   private def parseCollection[A](raw: String, parse: String => Either[String, A], render: A => ujson.Value): IO[Throwable, ujson.Obj] =
@@ -106,34 +116,27 @@ object KubernetesHttpApi:
       }.left.map(IllegalArgumentException(_))
     }
 
-  private def deploymentStatus(request: ApiRequest, settings: KubernetesHttpSettings, name: String): ZIO[KubernetesApi, Throwable, ApiResponse] =
+  private def deploymentStatus(request: ApiRequest, settings: KubernetesHttpSettings, name: String): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       namespace <- namespaceFrom(request.query, settings)
       deploymentName <- deploymentName(name)
       raw <- ZIO.serviceWithZIO[KubernetesApi](_.get(namespace, ResourceKind.Deployment, deploymentName))
+      record <- ZIO.fromEither(StateRecord.fromJson(namespace, ResourceKind.Deployment, raw).left.map(IllegalArgumentException(_)))
+      _ <- ZIO.serviceWithZIO[StateStore](_.put(record))
       status <- ZIO.fromEither(FlinkStatusSnapshot.fromJsonString(raw).left.map(IllegalArgumentException(_)))
     yield ok(status.json.render())
 
-  private def snapshotStatus(request: ApiRequest, settings: KubernetesHttpSettings, name: String): ZIO[KubernetesApi, Throwable, ApiResponse] =
+  private def snapshotStatus(request: ApiRequest, settings: KubernetesHttpSettings, name: String): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       namespace <- namespaceFrom(request.query, settings)
       snapshotName <- deploymentName(name)
       raw <- ZIO.serviceWithZIO[KubernetesApi](_.get(namespace, ResourceKind.StateSnapshot, snapshotName))
+      record <- ZIO.fromEither(StateRecord.fromJson(namespace, ResourceKind.StateSnapshot, raw).left.map(IllegalArgumentException(_)))
+      _ <- ZIO.serviceWithZIO[StateStore](_.put(record))
       status <- ZIO.fromEither(FlinkStateSnapshotStatus.fromJsonString(raw).left.map(IllegalArgumentException(_)))
     yield ok(status.json.render())
 
-  private def withSnapshot(
-      request: ApiRequest,
-      settings: KubernetesHttpSettings,
-      name: String
-  )(operation: (KubernetesApi, Namespace, String) => IO[Throwable, String]): ZIO[KubernetesApi, Throwable, ApiResponse] =
-    for
-      namespace <- namespaceFrom(request.query, settings)
-      snapshotName <- deploymentName(name)
-      output <- ZIO.serviceWithZIO[KubernetesApi](api => operation(api, namespace, snapshotName))
-    yield ok(output)
-
-  private def createSnapshot(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi, Throwable, ApiResponse] =
+  private def createSnapshot(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       body <- parseJson(request.body)
       namespace <- namespaceFrom(request.query, settings)
@@ -155,7 +158,7 @@ object KubernetesHttpApi:
       request: ApiRequest,
       settings: KubernetesHttpSettings,
       name: String
-  )(operation: (KubernetesApi, Namespace, ResourceKind, String) => IO[Throwable, String]): ZIO[KubernetesApi, Throwable, ApiResponse] =
+  )(operation: (KubernetesApi, Namespace, ResourceKind, String) => IO[Throwable, String]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       namespace <- namespaceFrom(request.query, settings)
       deploymentName <- ZIO.fromEither(
@@ -166,12 +169,54 @@ object KubernetesHttpApi:
       output <- ZIO.serviceWithZIO[KubernetesApi](api => operation(api, namespace, ResourceKind.Deployment, deploymentName))
     yield ok(output)
 
+  private def deleteResource(
+      request: ApiRequest,
+      settings: KubernetesHttpSettings,
+      name: String,
+      kind: ResourceKind
+  ): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+    for
+      namespace <- namespaceFrom(request.query, settings)
+      resourceName <- deploymentName(name)
+      output <- ZIO.serviceWithZIO[KubernetesApi](_.delete(namespace, kind, resourceName))
+      _ <- ZIO.serviceWithZIO[StateStore](_.delete(StateKey(namespace, kind, resourceName)))
+    yield ok(output)
+
+  private def listState(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+    for
+      namespace <- namespaceFrom(request.query, settings)
+      store <- ZIO.service[StateStore]
+      records <- store.list(namespace)
+      result = ujson.Obj(
+        "backend" -> store.backend.toString.toLowerCase,
+        "namespace" -> namespace.namespaceValue,
+        "items" -> ujson.Arr(records.sortBy(record => (record.key.kind.apiResource, record.key.name)).map(_.json)*)
+      )
+    yield ok(result.render())
+
+  private def getState(
+      request: ApiRequest,
+      settings: KubernetesHttpSettings,
+      kind: String,
+      name: String
+  ): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+    for
+      namespace <- namespaceFrom(request.query, settings)
+      parsedKind <- ZIO.fromEither(ResourceKind.fromApiResource(kind).orElse(ResourceKind.parse(kind).toOption).toRight(IllegalArgumentException(s"unsupported state kind: $kind")))
+      resourceName <- deploymentName(name)
+      store <- ZIO.service[StateStore]
+      record <- store.get(StateKey(namespace, parsedKind, resourceName))
+      response <- record match
+        case Some(value) => ZIO.succeed(ok(ujson.Obj("backend" -> store.backend.toString.toLowerCase, "item" -> value.json).render()))
+        case None => ZIO.succeed(ApiResponse(404, errorJson("state record not found")))
+    yield response
+
   private def savepoint(
       request: ApiRequest,
       settings: KubernetesHttpSettings,
       name: String,
       suspended: Boolean
-  ): ZIO[KubernetesApi, Throwable, ApiResponse] =
+  ): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       namespace <- namespaceFrom(request.query, settings)
       deploymentName <- ZIO.fromEither(
