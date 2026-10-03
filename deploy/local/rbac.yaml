@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zio-flink-operator
+  namespace: flink-lineage-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zio-flink-operator
+  namespace: flink-lineage-test
+rules:
+  - apiGroups: ["flink.apache.org"]
+    resources:
+      - flinkdeployments
+      - flinksessionjobs
+      - flinkstatesnapshots
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zio-flink-operator
+  namespace: flink-lineage-test
+subjects:
+  - kind: ServiceAccount
+    name: zio-flink-operator
+    namespace: flink-lineage-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zio-flink-operator

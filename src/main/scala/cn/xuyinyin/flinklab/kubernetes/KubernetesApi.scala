@@ -1,0 +1,220 @@
+package cn.xuyinyin.flinklab.kubernetes
+
+import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
+import cn.xuyinyin.flinklab.operator.watch.{WatchEvent, WatchEventType}
+import io.kubernetes.client.openapi.{ApiClient, JSON, Pair}
+import io.kubernetes.client.openapi.apis.CustomObjectsApi
+import io.kubernetes.client.util.{Config, Watch}
+import okhttp3.{MediaType, RequestBody}
+import zio.*
+import zio.stream.*
+
+trait KubernetesApi:
+  def apply(namespace: Namespace, resource: String, dryRun: Boolean): IO[Throwable, String]
+  def list(namespace: Namespace, kind: ResourceKind): IO[Throwable, String] =
+    ZIO.fail(UnsupportedOperationException("list is not implemented by this KubernetesApi"))
+  def get(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
+  def delete(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
+  def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String): IO[Throwable, String]
+  def watch(namespace: Namespace, kind: ResourceKind, name: String): ZStream[Any, Throwable, WatchEvent] =
+    watchFrom(namespace, kind, Some(name), None)
+  def watchFrom(namespace: Namespace, kind: ResourceKind, name: Option[String], resourceVersion: Option[String]): ZStream[Any, Throwable, WatchEvent] =
+    watch(namespace, kind, name.getOrElse(""))
+
+final case class KubernetesApiSettings(
+    group: String = "flink.apache.org",
+    version: String = "v1beta1",
+    fieldManager: String = "zio-flink-operator-lab",
+    maxRetries: Int = 3
+)
+
+object KubernetesApiSettings:
+  def fromEnv(env: Map[String, String]): KubernetesApiSettings =
+    KubernetesApiSettings(
+      group = env.getOrElse("FLINK_OPERATOR_GROUP", "flink.apache.org"),
+      version = env.getOrElse("FLINK_OPERATOR_VERSION", "v1beta1"),
+      fieldManager = env.getOrElse("FLINK_OPERATOR_FIELD_MANAGER", "zio-flink-operator-lab"),
+      maxRetries = env.get("FLINK_OPERATOR_MAX_RETRIES").flatMap(_.toIntOption).getOrElse(3)
+    )
+
+/** Direct Kubernetes API adapter. It submits Flink CRs through the API server. */
+final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: => ApiClient) extends KubernetesApi:
+  private lazy val apiClient = suppliedClient
+
+  override def apply(namespace: Namespace, resource: String, dryRun: Boolean): IO[Throwable, String] =
+    for
+      value <- ZIO.attempt(ujson.read(resource))
+      kind <- ZIO.fromEither(
+        value.obj.get("kind").flatMap(_.strOpt).toRight(IllegalArgumentException("Flink resource kind is required"))
+      )
+      name <- ZIO.fromEither(
+        value.obj
+          .get("metadata")
+          .flatMap(_.objOpt)
+          .flatMap(_.get("name"))
+          .flatMap(_.strOpt)
+          .filter(_.nonEmpty)
+          .toRight(IllegalArgumentException("Flink resource metadata.name is required"))
+      )
+      result <- request(
+        method = "PATCH",
+        path = resourcePath(namespace, apiResource(kind), name),
+        query = Map("fieldManager" -> settings.fieldManager) ++ dryRunQuery(dryRun),
+        body = Some(resource),
+        contentType = "application/apply-patch+yaml"
+      )
+    yield result
+
+  override def get(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String] =
+    request("GET", resourcePath(namespace, apiResource(kind), name))
+
+  override def list(namespace: Namespace, kind: ResourceKind): IO[Throwable, String] =
+    request("GET", collectionPath(namespace, apiResource(kind)))
+
+  override def delete(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String] =
+    request("DELETE", resourcePath(namespace, apiResource(kind), name))
+
+  override def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String): IO[Throwable, String] =
+    request(
+      method = "PATCH",
+      path = resourcePath(namespace, apiResource(kind), name),
+      query = Map("fieldManager" -> settings.fieldManager),
+      body = Some(patch),
+      contentType = "application/merge-patch+json"
+    )
+
+  override def watchFrom(namespace: Namespace, kind: ResourceKind, name: Option[String], resourceVersion: Option[String]): ZStream[Any, Throwable, WatchEvent] =
+    ZStream.unwrapScoped {
+      ZIO.acquireRelease(
+        ZIO.attemptBlocking {
+          val client = apiClient
+          val customObjects = new CustomObjectsApi(client)
+          val builder = customObjects
+            .listNamespacedCustomObject(
+              settings.group,
+              settings.version,
+              namespace.namespaceValue,
+              apiResource(kind)
+            )
+          name.foreach(value => builder.fieldSelector(s"metadata.name=$value"))
+          resourceVersion.foreach(value => builder.resourceVersion(value))
+          val call = builder.allowWatchBookmarks(true).watch(true).buildCall(null)
+          (client, Watch.createWatch[Object](client, call, classOf[Object]))
+        }
+      ) { case (_, watch) => ZIO.attemptBlocking(watch.close()).ignore }
+        .map { case (_, watch) =>
+          val initial = name.map(value => ZStream.fromZIO(initialEvent(namespace, kind, value))).getOrElse(ZStream.empty)
+          initial ++ ZStream.repeatZIOOption(nextEvent(watch))
+        }
+    }
+
+  private def initialEvent(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, WatchEvent] =
+    ZIO.attemptBlocking {
+      val response = new CustomObjectsApi(apiClient)
+        .getNamespacedCustomObject(settings.group, settings.version, namespace.namespaceValue, apiResource(kind), name)
+        .execute()
+      WatchEvent.fromJson(ujson.Obj("type" -> "ADDED", "object" -> ujson.read(JSON.serialize(response))))
+        .fold(message => throw IllegalArgumentException(message), identity)
+    }
+
+  private def nextEvent(watch: Watch[Object]): ZIO[Any, Option[Throwable], WatchEvent] =
+    ZIO.attemptBlocking {
+      if watch.hasNext then Some(watch.next()) else None
+    }.mapError(Some(_)).flatMap {
+      case None => ZIO.fail(None)
+      case Some(response) =>
+        val objectJson =
+          if response.`object` != null then JSON.serialize(response.`object`)
+          else if response.status != null then JSON.serialize(response.status)
+          else "{}"
+        ZIO.fromEither(WatchEvent.fromJson(ujson.Obj("type" -> response.`type`, "object" -> ujson.read(objectJson))))
+          .mapError(message => Some(IllegalArgumentException(message)))
+          .flatMap {
+            case event if event.eventType == WatchEventType.Error =>
+              ZIO.fail(Some(IllegalArgumentException(errorMessage(event))))
+            case event => ZIO.succeed(event)
+          }
+    }
+
+  private def errorMessage(event: WatchEvent): String =
+    event.resource.obj.get("message").map(_.str).filter(_.nonEmpty).getOrElse("Kubernetes watch returned an error event")
+
+  private def apiResource(kind: ResourceKind): String =
+    kind match
+      case ResourceKind.Deployment => "flinkdeployments"
+      case ResourceKind.SessionJob => "flinksessionjobs"
+      case ResourceKind.StateSnapshot => "flinkstatesnapshots"
+
+  private def apiResource(kind: String): String =
+    kind match
+      case "FlinkDeployment" => "flinkdeployments"
+      case "FlinkSessionJob" => "flinksessionjobs"
+      case "FlinkStateSnapshot" => "flinkstatesnapshots"
+      case other => throw IllegalArgumentException(s"unsupported Flink custom resource kind: $other")
+
+  private def resourcePath(namespace: Namespace, resource: String, name: String): String =
+    "/apis/" + settings.group + "/" + settings.version + "/namespaces/" +
+      namespace.namespaceValue + "/" + resource + "/" + name
+
+  private def collectionPath(namespace: Namespace, resource: String): String =
+    "/apis/" + settings.group + "/" + settings.version + "/namespaces/" + namespace.namespaceValue + "/" + resource
+
+  private def dryRunQuery(dryRun: Boolean): Map[String, String] =
+    if dryRun then Map("dryRun" -> "All") else Map.empty
+
+  private def request(
+      method: String,
+      path: String,
+      query: Map[String, String] = Map.empty,
+      body: Option[String] = None,
+      contentType: String = "application/json"
+  ): IO[Throwable, String] =
+    val effect = ZIO.attemptBlocking {
+      val queryParams = new java.util.ArrayList[Pair]()
+      query.foreach { case (key, value) => queryParams.add(new Pair(key, value)) }
+      val headers = new java.util.HashMap[String, String]()
+      headers.put("Accept", "application/json")
+      headers.put("Content-Type", contentType)
+      val requestWithoutBody = apiClient.buildRequest(
+        null,
+        path,
+        method,
+        queryParams,
+        new java.util.ArrayList[Pair](),
+        null,
+        headers,
+        new java.util.HashMap[String, String](),
+        new java.util.HashMap[String, Object](),
+        if apiClient.getAuthentications.containsKey("BearerToken") then Array("BearerToken") else Array.empty[String],
+        null
+      )
+      val request = body match
+        case Some(value) =>
+          requestWithoutBody.newBuilder().method(method, RequestBody.create(value, MediaType.parse(contentType))).build()
+        case None => requestWithoutBody
+      val response = apiClient.getHttpClient.newCall(request).execute()
+      try
+        val responseBody = Option(response.body()).map(_.string()).getOrElse("")
+        if response.isSuccessful then responseBody
+        else throw KubernetesApiFailure(response.code(), responseBody)
+      finally response.close()
+    }
+    effect.retry((Schedule.exponential(50.millis) && Schedule.recurs(settings.maxRetries)).whileInput(isRetryable))
+
+  private def isRetryable(error: Throwable): Boolean =
+    error match
+      case KubernetesApiFailure(status, _) => status == 429 || status >= 500
+      case _: java.io.IOException           => true
+      case _                                => false
+
+  private final case class KubernetesApiFailure(status: Int, body: String)
+      extends RuntimeException(s"Kubernetes API request failed with HTTP $status: $body")
+
+object KubernetesApiLive:
+  def apply(settings: KubernetesApiSettings): KubernetesApiLive =
+    new KubernetesApiLive(settings, Config.defaultClient())
+
+object KubernetesApi:
+  val live: ZLayer[Any, Nothing, KubernetesApi] =
+    ZLayer.succeed(KubernetesApiLive(KubernetesApiSettings.fromEnv(sys.env)))

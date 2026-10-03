@@ -1,0 +1,22 @@
+{
+  "apiVersion": "flink.apache.org/v1beta1",
+  "kind": "FlinkDeployment",
+  "metadata": {
+    "name": "word-count",
+    "namespace": "default"
+  },
+  "spec": {
+    "image": "flink:1.20.1",
+    "imagePullPolicy": "IfNotPresent",
+    "flinkVersion": "v1_20",
+    "jobManager": {"resource": {"cpu": 1, "memory": "1024m"}},
+    "taskManager": {"resource": {"cpu": 1, "memory": "1024m"}},
+    "job": {
+      "jarURI": "local:///opt/flink/examples/streaming/WordCount.jar",
+      "entryClass": "org.apache.flink.examples.java.wordcount.WordCount",
+      "parallelism": 1,
+      "upgradeMode": "stateless",
+      "state": "running"
+    }
+  }
+}
