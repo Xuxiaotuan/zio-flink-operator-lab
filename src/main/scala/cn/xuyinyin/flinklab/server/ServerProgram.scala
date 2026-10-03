@@ -1,7 +1,7 @@
 package cn.xuyinyin.flinklab.server
 
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
-import cn.xuyinyin.flinklab.state.StateStore
+import cn.xuyinyin.flinklab.state.{StatePoller, StateStore}
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 import zio.*
 
@@ -26,6 +26,7 @@ object ServerProgram:
         api <- ZIO.service[KubernetesApi]
         store <- ZIO.service[StateStore]
         _ <- store.initialize
+        _ <- StatePoller.run.forkScoped
         settings = HttpServerSettings.fromEnv(sys.env)
         running <- ZIO.acquireRelease(start(settings, api, store)) { case (server, executor) =>
           ZIO.attempt(server.stop(0)).ignore *> ZIO.succeed(executor.shutdown())

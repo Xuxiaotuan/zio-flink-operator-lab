@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "zio-flink-operator-lab Kubernetes 部署",
+    "output": "deployment.html",
+    "viewBox": [1300, 760],
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "components": [
+    {"id": "github", "type": "external", "label": "GitHub", "sublabel": "main", "pos": [35, 75], "size": [160, 64]},
+    {"id": "jenkins", "type": "backend", "label": "KubeSphere Jenkins", "sublabel": "test / build / push", "pos": [250, 75], "size": [210, 64]},
+    {"id": "registry", "type": "cloud", "label": "Harbor Registry", "sublabel": "image", "pos": [520, 75], "size": [180, 64]},
+    {"id": "api-server", "type": "cloud", "label": "Kubernetes API Server", "sublabel": "control plane", "pos": [600, 165], "size": [220, 70]},
+    {"id": "replica-a", "type": "backend", "label": "ZIO Control Plane ×1", "sublabel": "node xjw", "pos": [300, 320], "size": [220, 74]},
+    {"id": "replica-b", "type": "backend", "label": "ZIO Control Plane ×1", "sublabel": "node xxt", "pos": [900, 320], "size": [220, 74]},
+    {"id": "operator", "type": "backend", "label": "Flink Kubernetes Operator", "sublabel": "watch / reconcile", "pos": [900, 500], "size": [230, 74]},
+    {"id": "flink-cr", "type": "database", "label": "Flink CRs", "sublabel": "Deployment / SessionJob / Snapshot", "pos": [600, 500], "size": [220, 74]},
+    {"id": "flink-runtime", "type": "backend", "label": "Flink Runtime", "sublabel": "JobManager / TaskManager", "pos": [900, 650], "size": [230, 74]},
+    {"id": "rustfs", "type": "cloud", "label": "RustFS S3", "sublabel": "savepoint bucket", "pos": [1160, 650], "size": [120, 74]}
+  ],
+  "connections": [
+    {"id": "c1", "from": "github", "to": "jenkins", "label": "push / trigger", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelAt": [232, 155]},
+    {"id": "c2", "from": "jenkins", "to": "registry", "label": "image push", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelAt": [490, 155]},
+    {"id": "c3", "from": "registry", "to": "api-server", "fromSide": "bottom", "toSide": "top"},
+    {"id": "c4", "from": "replica-a", "to": "api-server", "fromSide": "top", "toSide": "bottom"},
+    {"id": "c5", "from": "replica-b", "to": "api-server", "fromSide": "top", "toSide": "bottom"},
+    {"id": "c6", "from": "api-server", "to": "flink-cr", "fromSide": "bottom", "toSide": "top"},
+    {"id": "c7", "from": "operator", "to": "flink-cr", "fromSide": "left", "toSide": "right"},
+    {"id": "c8", "from": "operator", "to": "flink-runtime", "fromSide": "bottom", "toSide": "top"},
+    {"id": "c9", "from": "flink-runtime", "to": "rustfs", "fromSide": "right", "toSide": "left"}
+  ]
+}

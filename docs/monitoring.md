@@ -38,7 +38,7 @@ curl -fsS 'http://127.0.0.1:18080/v1/state/deployment/orders?namespace=flink-lin
 curl -fsS -X DELETE 'http://127.0.0.1:18080/v1/snapshots/orders-savepoint?namespace=flink-lineage-test'
 ```
 
-`/v1/state` 返回当前配置的后端：Kubernetes 模式直接读取三类 Flink CR；PostgreSQL 模式返回最近一次状态观测。它用于检查多个服务副本是否读取同一份状态，不代表替代 Operator 的 CR 状态。
+`/v1/state` 返回当前配置的后端：Kubernetes 模式直接读取三类 Flink CR；PostgreSQL 模式返回共享表中的最新观测和 `history` 生命周期事件。服务启动后，每个副本都会按 `ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS`（默认 15 秒）读取三类 CR；轮询只读 Kubernetes，重复写入通过资源版本和幂等 upsert 合并。它用于检查多个服务副本是否读取同一份状态，不替代 Operator 的 CR 状态。
 
 提交 FlinkDeployment 仍使用同一个控制面：
 
@@ -70,5 +70,10 @@ curl -fsS -X POST 'http://127.0.0.1:18080/v1/snapshots?namespace=flink-lineage-t
 | `savepoint` | `status.jobStatus.savepointInfo` | 最后 savepoint、路径、触发信息和历史摘要 |
 | `path` | FlinkStateSnapshot.status | 本次快照完成路径 |
 | `state` / `failures` | FlinkStateSnapshot.status | 本次快照状态和失败信息 |
+
+`/v1/state` 中每个 item 还包含：
+
+- `deleted`：轮询发现 PostgreSQL 中的历史资源已经从 Kubernetes 消失后标记为 `true`。
+- `history`：状态变化、首次观测和删除事件；相同状态的重复轮询不会新增事件，最多保留 100 条。
 
 `checkpointInfo` 与 `savepointInfo` 是 Operator 写入的摘要。逐个 checkpoint 的大小、耗时、完成数量和 task/subtask 明细不在当前 Kubernetes API 适配器中；这些数据需要 Flink REST `/jobs/{jobId}/checkpoints`。

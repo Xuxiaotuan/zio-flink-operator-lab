@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zio-flink-operator
+  namespace: bigdata-lab
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zio-flink-operator
+  namespace: bigdata-lab
+rules:
+  - apiGroups: [""]
+    resources:
+      - services
+      - serviceaccounts
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - roles
+      - rolebindings
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["flink.apache.org"]
+    resources:
+      - flinkdeployments
+      - flinksessionjobs
+      - flinkstatesnapshots
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zio-flink-operator
+  namespace: bigdata-lab
+subjects:
+  - kind: ServiceAccount
+    name: zio-flink-operator
+    namespace: bigdata-lab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zio-flink-operator
+---
+# KubeSphere Jenkins agents run in this namespace. This binding lets the
+# pipeline apply only this namespace's service and Deployment resources.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zio-flink-operator-pipeline
+  namespace: bigdata-lab
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: kubesphere-devops-worker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zio-flink-operator

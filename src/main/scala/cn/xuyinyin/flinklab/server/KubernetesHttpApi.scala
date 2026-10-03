@@ -6,7 +6,7 @@ import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.operator.savepoint.SavepointPatch
 import cn.xuyinyin.flinklab.operator.watch.{FlinkStateSnapshotStatus, FlinkStatusSnapshot}
-import cn.xuyinyin.flinklab.state.{KubernetesStateStore, StateKey, StateRecord, StateStore}
+import cn.xuyinyin.flinklab.state.{KubernetesStateStore, StateJournal, StateKey, StateRecord, StateStore}
 import zio.*
 
 final case class ApiRequest(
@@ -94,7 +94,7 @@ object KubernetesHttpApi:
       raw <- ZIO.serviceWithZIO[KubernetesApi](_.list(namespace, kind))
       collection <- parseCollection(raw, parse, render)
       records <- ZIO.fromEither(StateRecord.fromCollection(namespace, kind, raw).left.map(IllegalArgumentException(_)))
-      _ <- ZIO.serviceWithZIO[StateStore](store => ZIO.foreachDiscard(records)(store.put))
+      _ <- ZIO.serviceWithZIO[StateStore](store => ZIO.foreachDiscard(records)(record => persist(store, record)))
     yield ok(collection.render())
 
   private def parseCollection[A](raw: String, parse: String => Either[String, A], render: A => ujson.Value): IO[Throwable, ujson.Obj] =
@@ -122,7 +122,7 @@ object KubernetesHttpApi:
       deploymentName <- deploymentName(name)
       raw <- ZIO.serviceWithZIO[KubernetesApi](_.get(namespace, ResourceKind.Deployment, deploymentName))
       record <- ZIO.fromEither(StateRecord.fromJson(namespace, ResourceKind.Deployment, raw).left.map(IllegalArgumentException(_)))
-      _ <- ZIO.serviceWithZIO[StateStore](_.put(record))
+      _ <- ZIO.serviceWithZIO[StateStore](persist(_, record))
       status <- ZIO.fromEither(FlinkStatusSnapshot.fromJsonString(raw).left.map(IllegalArgumentException(_)))
     yield ok(status.json.render())
 
@@ -132,7 +132,7 @@ object KubernetesHttpApi:
       snapshotName <- deploymentName(name)
       raw <- ZIO.serviceWithZIO[KubernetesApi](_.get(namespace, ResourceKind.StateSnapshot, snapshotName))
       record <- ZIO.fromEither(StateRecord.fromJson(namespace, ResourceKind.StateSnapshot, raw).left.map(IllegalArgumentException(_)))
-      _ <- ZIO.serviceWithZIO[StateStore](_.put(record))
+      _ <- ZIO.serviceWithZIO[StateStore](persist(_, record))
       status <- ZIO.fromEither(FlinkStateSnapshotStatus.fromJsonString(raw).left.map(IllegalArgumentException(_)))
     yield ok(status.json.render())
 
@@ -179,18 +179,24 @@ object KubernetesHttpApi:
       namespace <- namespaceFrom(request.query, settings)
       resourceName <- deploymentName(name)
       output <- ZIO.serviceWithZIO[KubernetesApi](_.delete(namespace, kind, resourceName))
-      _ <- ZIO.serviceWithZIO[StateStore](_.delete(StateKey(namespace, kind, resourceName)))
+      _ <- ZIO.serviceWithZIO[StateStore] { store =>
+        val key = StateKey(namespace, kind, resourceName)
+        store.getJournal(key).flatMap {
+          case Some(journal) => store.putJournal(StateJournal.markDeleted(journal))
+          case None => store.delete(key)
+        }
+      }
     yield ok(output)
 
   private def listState(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       namespace <- namespaceFrom(request.query, settings)
       store <- ZIO.service[StateStore]
-      records <- store.list(namespace)
+      journals <- store.listJournals(namespace)
       result = ujson.Obj(
         "backend" -> store.backend.toString.toLowerCase,
         "namespace" -> namespace.namespaceValue,
-        "items" -> ujson.Arr(records.sortBy(record => (record.key.kind.apiResource, record.key.name)).map(_.json)*)
+        "items" -> ujson.Arr(journals.sortBy(journal => (journal.key.kind.apiResource, journal.key.name)).map(_.json)*)
       )
     yield ok(result.render())
 
@@ -205,8 +211,8 @@ object KubernetesHttpApi:
       parsedKind <- ZIO.fromEither(ResourceKind.fromApiResource(kind).orElse(ResourceKind.parse(kind).toOption).toRight(IllegalArgumentException(s"unsupported state kind: $kind")))
       resourceName <- deploymentName(name)
       store <- ZIO.service[StateStore]
-      record <- store.get(StateKey(namespace, parsedKind, resourceName))
-      response <- record match
+      journal <- store.getJournal(StateKey(namespace, parsedKind, resourceName))
+      response <- journal match
         case Some(value) => ZIO.succeed(ok(ujson.Obj("backend" -> store.backend.toString.toLowerCase, "item" -> value.json).render()))
         case None => ZIO.succeed(ApiResponse(404, errorJson("state record not found")))
     yield response
@@ -277,6 +283,9 @@ object KubernetesHttpApi:
       nonceValue.toRight(IllegalArgumentException("request body must contain nonce as a string or safe integer"))
         .flatMap(raw => scala.util.Try(raw.toLong).toEither.left.map(_ => IllegalArgumentException("nonce must be a Long")))
     )
+
+  private def persist(store: StateStore, record: StateRecord): IO[Throwable, Unit] =
+    store.getJournal(record.key).flatMap(previous => store.putJournal(StateJournal.merge(previous, record)))
 
   private def prepareResource(resource: ujson.Value, namespace: Namespace, directory: Option[String]): String =
     val metadata = resource.obj.get("metadata").map(_.obj).getOrElse {

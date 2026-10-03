@@ -1,0 +1,122 @@
+apiVersion: devops.kubesphere.io/v1alpha3
+kind: Pipeline
+metadata:
+  name: zio-flink-operator-lab
+  namespace: bigdata-lab-devops845xv
+  annotations:
+    kubesphere.io/creator: admin
+spec:
+  type: pipeline
+  pipeline:
+    name: zio-flink-operator-lab
+    discarder:
+      days_to_keep: "14"
+      num_to_keep: "20"
+    jenkinsfile: |-
+      pipeline {
+        agent {
+          kubernetes {
+            inheritFrom 'maven'
+            containerTemplate {
+              name 'maven'
+              image 'maven:3.9.10-sapmachine-17'
+              privileged true
+            }
+          }
+        }
+
+        options {
+          skipDefaultCheckout(true)
+          disableConcurrentBuilds()
+          timeout(time: 45, unit: 'MINUTES')
+        }
+
+        environment {
+          REGISTRY = '100.97.53.78:5001'
+          IMAGE_REPOSITORY = 'xxt/zio-flink-operator-lab'
+          SOURCE_REPOSITORY = 'https://github.com/Xuxiaotuan/zio-flink-operator-lab.git'
+          SOURCE_BRANCH = 'main'
+          TARGET_NAMESPACE = 'bigdata-lab'
+          HTTPS_PROXY = 'http://100.95.135.45:7890'
+          HTTP_PROXY = 'http://100.95.135.45:7890'
+          ALL_PROXY = 'socks5://100.95.135.45:7890'
+          NO_PROXY = '100.97.53.78,100.82.226.63,10.233.0.1,kubernetes.default.svc,.svc,.cluster.local,localhost,127.0.0.1'
+        }
+
+        stages {
+          stage('Source') {
+            steps {
+              container('maven') {
+                deleteDir()
+                sh '''
+                  set -eu
+                  git clone --depth 1 --branch "$SOURCE_BRANCH" "$SOURCE_REPOSITORY" .
+                  git config --global --add safe.directory "$PWD"
+                  git rev-parse --short=12 HEAD > .git-short
+                '''
+              }
+            }
+          }
+
+          stage('Test and Assembly') {
+            steps {
+              container('maven') {
+                sh '''
+                  set -eu
+                  sbt_version=1.10.7
+                  curl -fsSL "https://github.com/sbt/sbt/releases/download/v${sbt_version}/sbt-${sbt_version}.tgz" | tar -xz -C /tmp
+                  export PATH="/tmp/sbt/bin:$PATH"
+                  export JAVA_HOME="${JAVA_HOME:-/opt/java/openjdk}"
+                  sbt -batch test assembly
+                '''
+              }
+            }
+          }
+
+          stage('Docker Push') {
+            steps {
+              container('maven') {
+                withCredentials([usernamePassword(credentialsId: 'xxt-harbor', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASSWORD')]) {
+                  sh '''
+                    set -eu
+                    tag="build-${BUILD_NUMBER}-$(cat .git-short)"
+                    image="$REGISTRY/$IMAGE_REPOSITORY"
+                    echo "$HARBOR_PASSWORD" | docker login "$REGISTRY" -u "$HARBOR_USER" --password-stdin
+                    docker build -t "$image:$tag" -t "$image:latest" .
+                    docker push "$image:$tag"
+                    docker push "$image:latest"
+                    printf '%s\n' "$image:$tag" > .image
+                  '''
+                }
+              }
+            }
+          }
+
+          stage('Deploy') {
+            steps {
+              container('maven') {
+                sh '''
+                  set -eu
+                  curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/v1.23.17/bin/linux/amd64/kubectl"
+                  chmod +x /tmp/kubectl
+                  export PATH="/tmp:$PATH"
+                  set +x
+                  token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  server="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}"
+                  kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt apply -k deploy/bigdata-lab
+                  kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt -n "$TARGET_NAMESPACE" set image deployment/zio-flink-operator api="$(cat .image)"
+                  kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt -n "$TARGET_NAMESPACE" rollout status deployment/zio-flink-operator --timeout=180s
+                '''
+              }
+            }
+          }
+        }
+
+        post {
+          always {
+            container('maven') {
+              sh 'docker logout "$REGISTRY" >/dev/null 2>&1 || true'
+            }
+          }
+        }
+      }

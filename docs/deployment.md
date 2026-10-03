@@ -40,6 +40,26 @@ curl -fsS http://127.0.0.1:18080/readyz
 
 真实任务提交前还需要在目标 namespace 安装 Flink Operator、CRD 和 watched namespace 配置。只有 CRD 没有 Operator 时，dry-run 可以通过，但不会产生 Flink Job。
 
+## 两节点目标 Kubernetes
+
+目标集群的服务清单位于 `deploy/bigdata-lab`，只部署一个 `zio-flink-operator` Service 和一个两副本 Deployment。副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和；Service 使用 NodePort `30881`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
+
+```text
+s3://flink-savepoints/zio-flink-operator/bigdata-lab/
+```
+
+部署前必须先安装 Flink Kubernetes Operator 并让它 watch `bigdata-lab`。部署后检查：
+
+```sh
+kubectl apply -k deploy/bigdata-lab
+kubectl -n bigdata-lab rollout status deployment/zio-flink-operator --timeout=180s
+kubectl -n bigdata-lab get pods -l app.kubernetes.io/name=zio-flink-operator -o wide
+curl -fsS http://<任一节点>:30881/healthz
+curl -fsS 'http://<任一节点>:30881/v1/state?namespace=bigdata-lab'
+```
+
+两个副本读取同一个 Kubernetes API Server 和同一组 Flink CR。每个副本都会轮询，因此状态统一但 Kubernetes list 流量随副本数线性增加；当前版本没有 leader election。
+
 ## RustFS
 
 savepoint 使用独立 bucket：

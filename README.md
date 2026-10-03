@@ -10,7 +10,20 @@
 
 核心链路是：`CLI/HTTP → ZIO 控制面 → Kubernetes API → Flink Kubernetes Operator → Flink CR/Flink 作业`。
 
+- 部署拓扑截图：
+
+  ![Kubernetes 部署拓扑](docs/diagrams/deployment.png)
+
+- 控制面架构截图：
+
+  ![控制面架构](docs/diagrams/architecture.png)
+
+- 状态与数据流截图：
+
+  ![状态与数据流](docs/diagrams/dataflow.png)
+
 - [交互式架构图](docs/diagrams/architecture.html)：组件边界、职责和部署关系。
+- [交互式 Kubernetes 部署图](docs/diagrams/deployment.html)：GitHub、Jenkins、Registry、两节点和 Flink 运行时。
 - [交互式数据流图](docs/diagrams/dataflow.html)：提交、状态观察、快照和 RustFS 存储链路。
 - [设计与协议](docs/design.md)：Kubernetes API-only 约束、资源模型和状态语义。
 
@@ -44,7 +57,9 @@ sbt "run apply state-snapshot --name orders-savepoint --target-kind deployment -
 sbt "run watch state-snapshot --name orders-savepoint --namespace $FLINK_NAMESPACE"
 ```
 
-HTTP 控制面由 `sbt "run serve"` 启动，默认监听 `0.0.0.0:8080`。它提供部署状态、快照创建、列表、查询和删除接口，可部署多个副本。
+HTTP 控制面由 `sbt "run serve"` 启动，默认监听 `0.0.0.0:8080`。它提供部署状态、快照创建、列表、查询和删除接口。Kubernetes 部署是一个 Service 加一个两副本 Deployment；每个副本定时从同一 namespace 的 Kubernetes API 读取 CR 状态，因此请求可以落到任一副本。
+
+状态轮询间隔由 `ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS` 控制，默认 15 秒。Kubernetes 模式以 CR 为事实源；PostgreSQL 模式会把轮询得到的状态和最多 100 条生命周期事件写入共享表。
 
 Kubernetes 部署默认使用 Flink CR 作为统一状态源；裸机部署可将最新状态观测写入 PostgreSQL：
 
