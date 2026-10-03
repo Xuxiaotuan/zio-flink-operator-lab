@@ -30,7 +30,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 这证明了提交、Operator reconcile、Pod 启动、Job 完成和两副本统一读取状态。checkpoint/savepoint 的真实路径和 RustFS 写入仍需在带 S3 插件与 Secret 的业务 Job 上单独验收。
 
-PipelineRun 是否成功必须以本轮 KubeSphere PipelineRun 的阶段状态和 Jenkins 日志为准。Jenkins 依赖下载失败、镜像仓库或集群权限问题属于 `external_blocked`，不能用目标 Deployment 的独立健康状态替代 CI/CD 证据。
+本轮最终 PipelineRun `zio-flink-operator-lab-6hkpd`（Jenkins build `#10`）为 `Succeeded`：70 个 Scala 测试通过，assembly 成功，镜像推送完成，目标 Deployment rollout 成功。前一轮 `q5d27` 已通过构建和镜像推送，但因两节点反亲和与默认 `maxSurge=25%` 导致新 Pod Pending，Deploy 阶段超时；`c90df0c` 将滚动更新改为 `maxSurge: 0`、`maxUnavailable: 1` 后恢复。以后仍需以当前 PipelineRun 阶段和 Jenkins 日志为准；依赖下载、镜像仓库或集群权限问题属于 `external_blocked`，不能用目标 Deployment 的独立健康状态替代 CI/CD 证据。
 
 ## 测试覆盖
 
