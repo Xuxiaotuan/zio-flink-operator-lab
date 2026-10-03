@@ -64,7 +64,12 @@ spec:
                 sh '''
                   set -eu
                   sbt_version=1.10.7
-                  curl -fsSL "https://github.com/sbt/sbt/releases/download/v${sbt_version}/sbt-${sbt_version}.tgz" | tar -xz -C /tmp
+                  rm -f "/tmp/sbt-${sbt_version}.tgz"
+                  curl --fail --location --http1.1 --retry 10 --retry-all-errors --retry-delay 3 --connect-timeout 30 --max-time 600 \
+                    -o "/tmp/sbt-${sbt_version}.tgz" \
+                    "https://github.com/sbt/sbt/releases/download/v${sbt_version}/sbt-${sbt_version}.tgz"
+                  tar -tzf "/tmp/sbt-${sbt_version}.tgz" >/dev/null
+                  tar -xzf "/tmp/sbt-${sbt_version}.tgz" -C /tmp
                   export PATH="/tmp/sbt/bin:$PATH"
                   export JAVA_HOME="${JAVA_HOME:-/opt/java/openjdk}"
                   export SBT_OPTS="-Dhttp.proxyHost=100.95.135.45 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=100.95.135.45 -Dhttps.proxyPort=7890"
