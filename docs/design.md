@@ -52,7 +52,7 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 `FlinkOperationFactory` 把 CLI apply 和 HTTP 写请求转换成同一个 `FlinkOperation`。`PolicyEngine` 负责升级策略校验；`AsyncOperationWorker` 负责状态推进、Kubernetes 提交、观察和验证。`OperationStore` 提供 Ref 内存实现和 PostgreSQL 实现，服务通过 `ZIO_FLINK_OPERATION_STORE=postgres` 选择共享操作审计。Kubernetes 适配器仍是唯一提交边界。
 
-请求接受和操作完成是两个结果。HTTP/CLI 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。只有 `Evidence` 同时满足资源身份、generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；失败进入 `Failed`。
+请求接受和操作完成是两个结果。HTTP/CLI 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。PolicyEngine 不通过时不会写 Kubernetes。验证会持续观察，只有 `Evidence` 同时满足资源身份、UID、提交后的 generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；确定失败进入 `Failed`，等待超时进入 `TimedOut`，提交请求结果不确定进入 `Uncertain`。
 
 严格 savepoint 策略的语义是：`StateProtection.Savepoint + FallbackPolicy.Forbidden` 在没有 savepoint 存储证据时直接拒绝；即使 Operator 后续表现为 last-state，也不能把操作标记为成功。网络中断使用 `Uncertain`，被新操作覆盖使用 `Superseded`，超时使用 `TimedOut`。
 
@@ -61,7 +61,7 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 1. CLI apply 和 HTTP 写请求统一生成 `FlinkOperation`，服务返回 `operationId`。
 2. `ResourceObserver` 先 list，再用 list 的 `resourceVersion` watch；收到 410 Gone 会重新 list。
 3. `VerificationEngine` 使用 `Evidence` 校验 UID、generation、observedGeneration、reconciliation 和 Job 状态。
-4. `AsyncOperationWorker` 执行提交、观察、验证和失败转移；`OperationMutex` 保护进程内副作用，PostgreSQL 行锁保护共享操作记录。
+4. `AsyncOperationWorker` 执行提交、观察、验证和失败转移；`OperationMutex` 保护进程内副作用，PostgreSQL 行锁保护共享操作记录。当前还没有跨副本、按 Flink 资源粒度的分布式互斥锁，因此同一资源的并发操作仍需要上层串行化。
 5. 真实 checkpoint/savepoint 路径和恢复结果仍需目标集群带 RustFS 插件和 Secret 的作业验收。
 
 ## 资源边界
@@ -74,7 +74,7 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 所有资源都通过 Kubernetes API Server 提交。程序不调用 `kubectl`，不直接操作 JobManager Pod。
 
-`apply` 使用 Server-Side Apply，旧的 `savepoint` 与 `suspend-savepoint` 使用局部 merge patch，作为兼容入口保留。新的 checkpoint/savepoint 流程使用 `FlinkStateSnapshot`，由 Operator 记录请求、结果路径和失败信息。
+`apply` 使用 Server-Side Apply，旧的 `savepoint` 与 `suspend-savepoint` 使用局部 merge patch，作为兼容入口保留。typed checkpoint/savepoint operation 使用确定名称创建 `FlinkStateSnapshot`，随后只观察这一个 Snapshot CR；Operator 记录请求、结果路径和失败信息。
 
 ## 状态来源
 
@@ -96,11 +96,11 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 `ZStream` 消费 Kubernetes watch 事件，reducer 按事件到达顺序维护状态。`Scope` 负责关闭 watch，`Schedule` 负责有界重试，`ZLayer` 负责组装 Kubernetes 客户端。HTTP 服务另外运行一个 ZIO 后台轮询器，按固定间隔 list 三类 Flink CR，把状态合并到共享状态后端。
 
-资源版本始终按不透明字符串处理。`ResourceObserver` 已实现 list → resourceVersion watch 和 410 Gone relist；resourceVersion 按不透明字符串传递。跨进程操作状态由 PostgreSQL OperationStore 持久化，watch 游标在每次 relist 后从 API Server 重新获得。
+资源版本始终按不透明字符串处理。`ResourceObserver` 已实现 list → resourceVersion watch 和 410 Gone relist；resourceVersion 按不透明字符串传递。跨进程操作状态由 PostgreSQL OperationStore 持久化，`requestId` 有唯一约束并作为幂等键；数据库读取或反序列化失败会返回 `StoreFailure`，不会伪装成“没有 operation”。watch 游标在每次 relist 后从 API Server 重新获得。
 
 ## 多副本与状态后端
 
-HTTP 副本不保存本地会话状态，Service 可以把请求路由到任意副本。资源状态后端由 `ZIO_FLINK_STATE_BACKEND` 选择，操作审计由 `ZIO_FLINK_OPERATION_STORE` 选择：
+HTTP 副本不保存本地会话状态，Service 可以把请求路由到任意副本。资源状态后端由 `ZIO_FLINK_STATE_BACKEND` 选择，操作审计由 `ZIO_FLINK_OPERATION_STORE` 选择；Kubernetes 多副本要设为 `postgres` 才能共享 operation 生命周期：
 
 | 模式 | 统一状态来源 | 用途 |
 | --- | --- | --- |

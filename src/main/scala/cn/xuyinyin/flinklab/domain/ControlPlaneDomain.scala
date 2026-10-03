@@ -127,7 +127,7 @@ enum DeletePolicy:
 enum SuspendPolicy:
   case KeepState, DiscardState
 
-final case class SnapshotPolicy(snapshotType: SnapshotType)
+final case class SnapshotPolicy(snapshotType: SnapshotType, snapshotName: Option[DeploymentName] = None)
 
 enum FlinkOperation:
   case Deploy(spec: FlinkDeploymentSpec)
@@ -245,6 +245,10 @@ object ControlPlaneError:
     def message: String = s"operation is not supported by this control-plane phase: ${operation.getClass.getSimpleName}"
   final case class VerificationFailed(reason: String) extends ControlPlaneError:
     def message: String = reason
+  final case class VerificationTimedOut(reason: String) extends ControlPlaneError:
+    def message: String = reason
+  final case class UncertainFailure(reason: String) extends ControlPlaneError:
+    def message: String = reason
   final case class StoreFailure(reason: String) extends ControlPlaneError:
     def message: String = reason
 
@@ -302,6 +306,7 @@ object OperationStateMachine:
       case OperationEvent.Observed(_, _)               => state match
         case OperationState.WaitingForObservation => Some(OperationState.Reconciling)
         case OperationState.Reconciling            => Some(OperationState.Reconciling)
+        case OperationState.Verifying              => Some(OperationState.Verifying)
         case _ => None
       case OperationEvent.ReconciliationStarted(_)     => state match
         case OperationState.Submitted | OperationState.WaitingForObservation => Some(OperationState.Reconciling)
@@ -316,7 +321,7 @@ object OperationStateMachine:
         case OperationState.Verifying => Some(OperationState.Verifying)
         case _ => None
       case OperationEvent.VerificationStarted(_)       => state match
-        case OperationState.Reconciling | OperationState.Verifying => Some(OperationState.Verifying)
+        case OperationState.WaitingForObservation | OperationState.Reconciling | OperationState.Verifying => Some(OperationState.Verifying)
         case _ => None
       case OperationEvent.VerificationSucceeded(_)     => state match
         case OperationState.Verifying => Some(OperationState.Completed)

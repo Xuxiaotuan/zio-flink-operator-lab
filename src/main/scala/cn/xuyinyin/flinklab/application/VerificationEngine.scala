@@ -52,12 +52,26 @@ object Evidence:
 final case class VerificationResult(evidence: Evidence, reason: String)
 
 trait VerificationEngine:
-  def verify(operation: FlinkOperation, expected: ResourceRef, evidence: Evidence): Either[ControlPlaneError, VerificationResult]
+  def verify(
+      operation: FlinkOperation,
+      expected: ResourceRef,
+      evidence: Evidence,
+      expectedGeneration: Option[Generation] = None
+  ): Either[ControlPlaneError, VerificationResult]
 
 object DefaultVerificationEngine extends VerificationEngine:
-  override def verify(operation: FlinkOperation, expected: ResourceRef, evidence: Evidence): Either[ControlPlaneError, VerificationResult] =
+  override def verify(
+      operation: FlinkOperation,
+      expected: ResourceRef,
+      evidence: Evidence,
+      expectedGeneration: Option[Generation]
+  ): Either[ControlPlaneError, VerificationResult] =
     if evidence.resource.namespace != expected.namespace || evidence.resource.kind != expected.kind || evidence.resource.name != expected.name then
       Left(ControlPlaneError.VerificationFailed("observed resource identity does not match operation target"))
+    else if expected.uid.nonEmpty && evidence.uid != expected.uid then
+      Left(ControlPlaneError.VerificationFailed("observed resource UID does not match operation target"))
+    else if expectedGeneration.nonEmpty && (evidence.generation != expectedGeneration || evidence.observedGeneration != expectedGeneration) then
+      Left(ControlPlaneError.VerificationFailed("observed resource does not reconcile the submitted generation"))
     else if evidence.generation.nonEmpty && evidence.observedGeneration.exists(observed => evidence.generation.exists(_ != observed)) then
       Left(ControlPlaneError.VerificationFailed("observedGeneration does not match generation"))
     else

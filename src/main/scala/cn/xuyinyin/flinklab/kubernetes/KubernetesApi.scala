@@ -104,18 +104,8 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
         }
       ) { case (_, watch) => ZIO.attemptBlocking(watch.close()).ignore }
         .map { case (_, watch) =>
-          val initial = name.map(value => ZStream.fromZIO(initialEvent(namespace, kind, value))).getOrElse(ZStream.empty)
-          initial ++ ZStream.repeatZIOOption(nextEvent(watch))
+          ZStream.repeatZIOOption(nextEvent(watch))
         }
-    }
-
-  private def initialEvent(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, WatchEvent] =
-    ZIO.attemptBlocking {
-      val response = new CustomObjectsApi(apiClient)
-        .getNamespacedCustomObject(settings.group, settings.version, namespace.namespaceValue, apiResource(kind), name)
-        .execute()
-      WatchEvent.fromJson(ujson.Obj("type" -> "ADDED", "object" -> ujson.read(JSON.serialize(response))))
-        .fold(message => throw IllegalArgumentException(message), identity)
     }
 
   private def nextEvent(watch: Watch[Object]): ZIO[Any, Option[Throwable], WatchEvent] =

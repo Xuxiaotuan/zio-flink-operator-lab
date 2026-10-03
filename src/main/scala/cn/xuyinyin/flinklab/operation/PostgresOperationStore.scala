@@ -36,7 +36,12 @@ final class PostgresOperationStore(settings: OperationStoreSettings) extends Ope
     ZIO.attemptBlocking {
       withConnection { connection =>
         val statement = connection.createStatement()
-        try statement.executeUpdate(s"CREATE TABLE IF NOT EXISTS ${settings.table} (operation_id TEXT PRIMARY KEY, operation_json TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        try
+          statement.executeUpdate(s"CREATE TABLE IF NOT EXISTS ${settings.table} (operation_id TEXT PRIMARY KEY, operation_json TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+          statement.executeUpdate(s"ALTER TABLE ${settings.table} ADD COLUMN IF NOT EXISTS request_id TEXT")
+          statement.executeUpdate(s"UPDATE ${settings.table} SET request_id = operation_id WHERE request_id IS NULL")
+          statement.executeUpdate(s"ALTER TABLE ${settings.table} ALTER COLUMN request_id SET NOT NULL")
+          statement.executeUpdate(s"CREATE UNIQUE INDEX IF NOT EXISTS ${settings.table}_request_id_uq ON ${settings.table} (request_id)")
         finally statement.close()
       }
     }
@@ -44,10 +49,11 @@ final class PostgresOperationStore(settings: OperationStoreSettings) extends Ope
   override def create(operation: Operation): IO[ControlPlaneError, Unit] =
     ZIO.attemptBlocking {
       withConnection { connection =>
-        val statement = connection.prepareStatement(s"INSERT INTO ${settings.table} (operation_id, operation_json) VALUES (?, ?)")
+        val statement = connection.prepareStatement(s"INSERT INTO ${settings.table} (operation_id, request_id, operation_json) VALUES (?, ?, ?)")
         try
           statement.setString(1, operation.id.operationIdValue)
-          statement.setString(2, OperationCodec.json(operation))
+          statement.setString(2, operation.requestId.requestIdValue)
+          statement.setString(3, OperationCodec.json(operation))
           statement.executeUpdate()
           ()
         finally statement.close()
@@ -87,19 +93,19 @@ final class PostgresOperationStore(settings: OperationStoreSettings) extends Ope
       case error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
     }
 
-  override def get(id: OperationId): UIO[Option[Operation]] =
+  override def get(id: OperationId): IO[ControlPlaneError, Option[Operation]] =
     ZIO.attemptBlocking {
       withConnection { connection =>
         val statement = connection.prepareStatement(s"SELECT operation_json FROM ${settings.table} WHERE operation_id = ?")
         try
           statement.setString(1, id.operationIdValue)
           val result = statement.executeQuery()
-          try if result.next() then OperationCodec.fromJson(result.getString(1)).toOption else None finally result.close()
+          try if result.next() then OperationCodec.fromJson(result.getString(1)).map(Some(_)).left.map(ControlPlaneError.StoreFailure.apply) else Right(None) finally result.close()
         finally statement.close()
       }
-    }.orElseSucceed(None)
+    }.mapError(error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))).flatMap(ZIO.fromEither)
 
-  override def list: UIO[List[Operation]] =
+  override def list: IO[ControlPlaneError, List[Operation]] =
     ZIO.attemptBlocking {
       withConnection { connection =>
         val statement = connection.createStatement()
@@ -107,12 +113,29 @@ final class PostgresOperationStore(settings: OperationStoreSettings) extends Ope
           val result = statement.executeQuery(s"SELECT operation_json FROM ${settings.table} ORDER BY updated_at, operation_id")
           try
             val builder = List.newBuilder[Operation]
-            while result.next() do OperationCodec.fromJson(result.getString(1)).toOption.foreach(builder += _)
-            builder.result()
+            while result.next() do OperationCodec.fromJson(result.getString(1)) match
+              case Right(operation) => builder += operation
+              case Left(error) => throw StoreTransitionException(ControlPlaneError.StoreFailure(error))
+            Right(builder.result())
           finally result.close()
         finally statement.close()
       }
-    }.orElseSucceed(Nil)
+    }.mapError {
+      case StoreTransitionException(error) => error
+      case error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
+    }.flatMap(ZIO.fromEither)
+
+  override def findByRequestId(requestId: RequestId): IO[ControlPlaneError, Option[Operation]] =
+    ZIO.attemptBlocking {
+      withConnection { connection =>
+        val statement = connection.prepareStatement(s"SELECT operation_json FROM ${settings.table} WHERE request_id = ?")
+        try
+          statement.setString(1, requestId.requestIdValue)
+          val result = statement.executeQuery()
+          try if result.next() then OperationCodec.fromJson(result.getString(1)).map(Some(_)).left.map(ControlPlaneError.StoreFailure.apply) else Right(None) finally result.close()
+        finally statement.close()
+      }
+    }.mapError(error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))).flatMap(ZIO.fromEither)
 
   private def withConnection[A](f: Connection => A): A =
     val connection = DriverManager.getConnection(settings.jdbcUrl, settings.username, settings.password)

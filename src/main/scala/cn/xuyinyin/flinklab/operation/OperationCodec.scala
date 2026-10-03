@@ -33,7 +33,10 @@ object OperationCodec:
     case FlinkOperation.Suspend(target, _) => ujson.Obj("type" -> "SUSPEND", "target" -> target.json)
     case FlinkOperation.Resume(target) => ujson.Obj("type" -> "RESUME", "target" -> target.json)
     case FlinkOperation.Restart(target, policy) => ujson.Obj("type" -> "RESTART", "target" -> target.json, "protection" -> policy.protection.toString, "fallback" -> policy.fallback.toString)
-    case FlinkOperation.Snapshot(target, policy) => ujson.Obj("type" -> "SNAPSHOT", "target" -> target.json, "snapshotType" -> policy.snapshotType.toString)
+    case FlinkOperation.Snapshot(target, policy) =>
+      val value = ujson.Obj("type" -> "SNAPSHOT", "target" -> target.json, "snapshotType" -> policy.snapshotType.toString)
+      policy.snapshotName.foreach(name => value("snapshotName") = name.nameValue)
+      value
     case FlinkOperation.Delete(target, _) => ujson.Obj("type" -> "DELETE", "target" -> target.json)
 
   private def command(value: ujson.Value): Either[String, FlinkOperation] =
@@ -44,7 +47,11 @@ object OperationCodec:
       case "SUSPEND" => resourceRef(obj("target")).map(target => FlinkOperation.Suspend(target, SuspendPolicy.KeepState))
       case "RESUME" => resourceRef(obj("target")).map(FlinkOperation.Resume.apply)
       case "RESTART" => for target <- resourceRef(obj("target")); policy <- policyValue(obj) yield FlinkOperation.Restart(target, policy)
-      case "SNAPSHOT" => for target <- resourceRef(obj("target")); snapshotType <- string(obj, "snapshotType").toRight("snapshotType is required").flatMap(SnapshotType.parse) yield FlinkOperation.Snapshot(target, SnapshotPolicy(snapshotType))
+      case "SNAPSHOT" => for
+        target <- resourceRef(obj("target"))
+        snapshotType <- string(obj, "snapshotType").toRight("snapshotType is required").flatMap(SnapshotType.parse)
+        snapshotName <- string(obj, "snapshotName").map(value => DeploymentName.from(value).map(Some(_))).getOrElse(Right(None))
+      yield FlinkOperation.Snapshot(target, SnapshotPolicy(snapshotType, snapshotName))
       case "DELETE" => resourceRef(obj("target")).map(target => FlinkOperation.Delete(target, DeletePolicy.Graceful))
       case other => Left(s"unsupported operation type: $other")
     }
@@ -58,7 +65,7 @@ object OperationCodec:
       name <- string(metadata, "name").toRight("spec name is required").flatMap(DeploymentName.from)
       jar <- string(job, "jarURI").toRight("job jarURI is required").flatMap(JobJarUri.from)
       parallelism <- number(job, "parallelism").toRight("job parallelism is required")
-    yield FlinkDeploymentSpec(namespace, name, string(spec, "image").getOrElse("flink:1.20.1"), string(spec, "flinkVersion").getOrElse("v1_20"), FlinkJob(jar, string(job, "entryClass").getOrElse("org.apache.flink.examples.java.wordcount.WordCount"), parallelism))
+    yield FlinkDeploymentSpec(namespace, name, string(spec, "image").getOrElse("flink:1.20.1"), string(spec, "flinkVersion").getOrElse("v1_20"), FlinkJob(jar, string(job, "entryClass").getOrElse("org.apache.flink.streaming.examples.wordcount.WordCount"), parallelism))
 
   private def resourceRef(value: ujson.Value): Either[String, ResourceRef] =
     val obj = value.obj

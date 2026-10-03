@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.server
 
 import cn.xuyinyin.flinklab.cli.ResourceKind
-import cn.xuyinyin.flinklab.domain.SnapshotType
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.operator.savepoint.SavepointPatch
@@ -94,7 +93,7 @@ object KubernetesHttpApi:
           case Some(store) =>
             for
               operationId <- ZIO.fromEither(cn.xuyinyin.flinklab.domain.OperationId.from(id).left.map(IllegalArgumentException(_)))
-              operation <- store.get(operationId)
+              operation <- store.get(operationId).mapError(error => IllegalArgumentException(error.message))
             yield operation.map(value => ok(value.json.render())).getOrElse(ApiResponse(404, errorJson("operation not found")))
       case _ => route(request, settings)
 

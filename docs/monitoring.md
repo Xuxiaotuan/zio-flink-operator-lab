@@ -40,7 +40,7 @@ curl -fsS -X DELETE 'http://127.0.0.1:18080/v1/snapshots/orders-savepoint?namesp
 
 `/v1/state` 返回当前配置的后端：Kubernetes 模式直接读取三类 Flink CR；PostgreSQL 模式返回共享表中的最新观测和 `history` 生命周期事件。服务启动后，每个副本都会按 `ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS`（默认 15 秒）读取三类 CR；轮询只读 Kubernetes，重复写入通过资源版本和幂等 upsert 合并。它用于检查多个服务副本是否读取同一份状态，不替代 Operator 的 CR 状态。
 
-提交 FlinkDeployment、快照、suspend 和 delete 都先返回 `202` 与 `operationId`，worker 再推进 Kubernetes reconcile 和 verification：
+提交 FlinkDeployment、快照、suspend 和 delete 都先返回 `202` 与 `operationId`，worker 再推进 Kubernetes reconcile 和 verification。相同 `requestId` 重试会返回同一个 `operationId`：
 
 ```sh
 curl -fsS -X POST 'http://127.0.0.1:18080/v1/deployments?namespace=flink-lineage-test&dryRun=true' \
@@ -58,7 +58,7 @@ curl -fsS -X POST 'http://127.0.0.1:18080/v1/snapshots?namespace=flink-lineage-t
   --data '{"targetKind":"deployment","targetName":"orders","snapshotName":"orders-savepoint","type":"savepoint"}'
 ```
 
-`type` 可以是 `savepoint` 或 `checkpoint`。请求被控制面接受后返回 `operationId`；最终结果先读取 `/v1/operations/<operationId>` 的生命周期，再读取对应 `FlinkStateSnapshot.status`。
+`type` 可以是 `savepoint` 或 `checkpoint`。请求被控制面接受后返回 `operationId`；最终结果先读取 `/v1/operations/<operationId>` 的生命周期，再读取对应 `FlinkStateSnapshot.status`。`COMPLETED` 只表示这次 operation 对应的资源证据已经满足校验；`TIMEDOUT` 表示在等待窗口内没有得到证据，`UNCERTAIN` 表示 Kubernetes 写请求结果不确定，需要人工或后续观察确认。
 
 ## 字段含义
 

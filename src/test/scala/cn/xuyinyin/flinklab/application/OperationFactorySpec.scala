@@ -14,5 +14,9 @@ object OperationFactorySpec extends ZIOSpecDefault:
     test("turns an HTTP deployment document into the same typed operation") {
       val result = FlinkOperationFactory.fromDeploymentJson("analytics", """{"kind":"FlinkDeployment","metadata":{"name":"orders"},"spec":{"image":"flink:1.20.1","flinkVersion":"v1_20","job":{"jarURI":"local:///job.jar","entryClass":"example.WordCount","parallelism":2}}}""")
       assertTrue(result.exists(_.isInstanceOf[FlinkOperation.Deploy]))
+    },
+    test("rejects a misspelled state protection instead of defaulting to stateless") {
+      val command = Command.Apply(ResourceKind.Deployment, Map("name" -> "orders", "upgrade-mode" -> "savpoint"), dryRun = false)
+      assertTrue(FlinkOperationFactory.fromCommand(command).left.exists(_.contains("unknown state protection")))
     }
   )

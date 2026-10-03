@@ -7,8 +7,10 @@ trait OperationStore:
   def initialize: IO[Throwable, Unit] = ZIO.unit
   def create(operation: Operation): IO[ControlPlaneError, Unit]
   def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation]
-  def get(id: OperationId): UIO[Option[Operation]]
-  def list: UIO[List[Operation]]
+  def get(id: OperationId): IO[ControlPlaneError, Option[Operation]]
+  def list: IO[ControlPlaneError, List[Operation]]
+  def findByRequestId(requestId: RequestId): IO[ControlPlaneError, Option[Operation]] =
+    list.map(_.find(_.requestId == requestId))
 
 final class InMemoryOperationStore private (ref: Ref[Map[OperationId, Operation]]) extends OperationStore:
   override def create(operation: Operation): IO[ControlPlaneError, Unit] =
@@ -29,9 +31,9 @@ final class InMemoryOperationStore private (ref: Ref[Map[OperationId, Operation]
             case Right(next)    => (Right(next), current.updated(id, next))
     }.flatMap(result => ZIO.fromEither(result))
 
-  override def get(id: OperationId): UIO[Option[Operation]] = ref.get.map(_.get(id))
+  override def get(id: OperationId): IO[ControlPlaneError, Option[Operation]] = ref.get.map(_.get(id))
 
-  override def list: UIO[List[Operation]] = ref.get.map(_.values.toList.sortBy(_.createdAt))
+  override def list: IO[ControlPlaneError, List[Operation]] = ref.get.map(_.values.toList.sortBy(_.createdAt))
 
 object InMemoryOperationStore:
   def make: UIO[InMemoryOperationStore] = Ref.make(Map.empty[OperationId, Operation]).map(new InMemoryOperationStore(_))
@@ -55,7 +57,7 @@ final case class AcceptedOperation(
 
 trait FlinkControlPlane:
   def accept(requestId: RequestId, operation: FlinkOperation): IO[ControlPlaneError, AcceptedOperation]
-  def get(id: OperationId): UIO[Option[Operation]]
+  def get(id: OperationId): IO[ControlPlaneError, Option[Operation]]
 
 final class DefaultFlinkControlPlane(store: OperationStore) extends FlinkControlPlane:
   override def accept(requestId: RequestId, operation: FlinkOperation): IO[ControlPlaneError, AcceptedOperation] =
@@ -68,10 +70,20 @@ final class DefaultFlinkControlPlane(store: OperationStore) extends FlinkControl
       case FlinkOperation.Restart(target, _)    => target
       case FlinkOperation.Snapshot(target, _)   => target
       case FlinkOperation.Delete(target, _)     => target
-    val accepted = Operation.accepted(requestId, operation, resource, now)
-    store.create(accepted).as(AcceptedOperation(accepted.id, requestId, now))
+    store.findByRequestId(requestId).flatMap {
+      case Some(existing) => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))
+      case None =>
+        val accepted = Operation.accepted(requestId, operation, resource, now)
+        store.create(accepted).as(AcceptedOperation(accepted.id, requestId, now)).catchSome {
+          case ControlPlaneError.OperationAlreadyExists(_) =>
+            store.findByRequestId(requestId).flatMap {
+              case Some(existing) => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))
+              case None => ZIO.fail(ControlPlaneError.OperationAlreadyExists(accepted.id))
+            }
+        }
+    }
 
-  override def get(id: OperationId): UIO[Option[Operation]] = store.get(id)
+  override def get(id: OperationId): IO[ControlPlaneError, Option[Operation]] = store.get(id)
 
 object FlinkControlPlane:
   val live: ZLayer[OperationStore, Nothing, FlinkControlPlane] =

@@ -43,13 +43,13 @@ object Command:
           parsedKind <- ResourceKind.parse(kind)
           parsed <- parseOptions(tail)
           command <- action match
-            case "render" => Right(Render(parsedKind, parsed.values))
-            case "watch" => Right(Watch(parsedKind, parsed.values))
-            case "savepoint" => Right(Savepoint(parsedKind, parsed.values))
-            case "suspend-savepoint" => Right(SuspendSavepoint(parsedKind, parsed.values))
-            case "apply" => Right(Apply(parsedKind, parsed.values, parsed.dryRun))
-            case "status" => Right(Status(parsedKind, parsed.values))
-            case "delete" => Right(Delete(parsedKind, parsed.values))
+            case "render" => validate(action, parsed).map(_ => Render(parsedKind, parsed.values))
+            case "watch" => validate(action, parsed).map(_ => Watch(parsedKind, parsed.values))
+            case "savepoint" => validate(action, parsed).map(_ => Savepoint(parsedKind, parsed.values))
+            case "suspend-savepoint" => validate(action, parsed).map(_ => SuspendSavepoint(parsedKind, parsed.values))
+            case "apply" => validate(action, parsed).map(_ => Apply(parsedKind, parsed.values, parsed.dryRun))
+            case "status" => validate(action, parsed).map(_ => Status(parsedKind, parsed.values))
+            case "delete" => validate(action, parsed).map(_ => Delete(parsedKind, parsed.values))
             case other => Left(s"unknown command: $other (use render, apply, watch, savepoint, suspend-savepoint, status or delete)")
         yield command
       case _ => Left("expected: <render|apply|watch|savepoint|suspend-savepoint|status|delete> <deployment|session-job|state-snapshot> [options]")
@@ -66,3 +66,16 @@ object Command:
         case key :: _ if key.startsWith("--") => Left(s"option $key needs a value")
         case value :: _ => Left(s"unexpected argument: $value")
     loop(tokens, Map.empty, dryRun = false)
+
+  private def validate(action: String, parsed: ParsedOptions): Either[String, Unit] =
+    val common = Set("name", "namespace")
+    val allowed = action match
+      case "render" | "apply" => common ++ Set("image", "flink-version", "jar-uri", "entry-class", "parallelism", "upgrade-mode", "target-directory", "service-account", "deployment", "target-kind", "target-name", "snapshot-type")
+      case "watch" | "status" | "delete" => common
+      case "savepoint" => common ++ Set("nonce")
+      case "suspend-savepoint" => common
+      case _ => common
+    if parsed.dryRun && action != "apply" then Left("--dry-run is only valid for apply")
+    else parsed.values.keys.find(key => !allowed.contains(key)) match
+      case Some(key) => Left(s"unknown option: --$key")
+      case None => Right(())

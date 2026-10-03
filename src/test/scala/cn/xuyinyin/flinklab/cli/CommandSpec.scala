@@ -19,5 +19,11 @@ object CommandSpec extends ZIOSpecDefault:
       },
       test("rejects an option without a value") {
         assertTrue(Command.parse(List("render", "deployment", "--name")).isLeft)
+      },
+      test("does not allow dry-run to change delete semantics") {
+        assertTrue(Command.parse(List("delete", "deployment", "--name", "orders", "--dry-run")).left.exists(_.contains("only valid for apply")))
+      },
+      test("rejects unknown options") {
+        assertTrue(Command.parse(List("status", "deployment", "--name", "orders", "--typo", "value")).left.exists(_.contains("unknown option")))
       }
     )

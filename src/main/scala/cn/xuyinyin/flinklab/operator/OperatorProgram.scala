@@ -66,7 +66,7 @@ object OperatorProgram:
     val flinkVersion = options.getOrElse("flink-version", sys.env.getOrElse("FLINK_VERSION", "v1_20"))
     val jarUri = JobJarUri.from(options.getOrElse("jar-uri", sys.env.getOrElse("FLINK_JOB_JAR_URI", "local:///opt/flink/examples/streaming/WordCount.jar")))
       .fold(message => throw IllegalArgumentException(message), value => value)
-    val entryClass = options.getOrElse("entry-class", sys.env.getOrElse("FLINK_ENTRY_CLASS", "org.apache.flink.examples.java.wordcount.WordCount"))
+    val entryClass = options.getOrElse("entry-class", sys.env.getOrElse("FLINK_ENTRY_CLASS", "org.apache.flink.streaming.examples.wordcount.WordCount"))
     val parallelism = options.get("parallelism").orElse(sys.env.get("FLINK_PARALLELISM")).map(_.toInt).getOrElse(1)
     val job = FlinkJob(jarUri, entryClass, parallelism)
     val serviceAccount = options.get("service-account").orElse(sys.env.get("FLINK_SERVICE_ACCOUNT"))
