@@ -102,7 +102,7 @@ export POSTGRES_PASSWORD='由 Secret 注入'
 sbt "run serve"
 ```
 
-服务首次启动会创建 `zio_flink_operator_state` 表。表中只保存最新的 CR 状态观测；checkpoint/savepoint 文件仍由 Flink 写入 RustFS。
+服务首次启动会创建 `zio_flink_operator_state` 表。表中保存最新的 CR 状态观测和最多 100 条生命周期事件；checkpoint/savepoint 文件仍由 Flink 写入 RustFS。
 
 ## 迁移到目标集群
 

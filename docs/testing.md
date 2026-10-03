@@ -32,6 +32,8 @@ mvn -B -f job/pom.xml package -DskipTests
 
 这证明了提交、Operator reconcile、Pod 启动、Job 完成和两副本统一读取状态。checkpoint/savepoint 的真实路径和 RustFS 写入仍需在带 S3 插件与 Secret 的业务 Job 上单独验收。
 
+KubeSphere 最后一次 PipelineRun 已完成 Git 拉取并进入失败状态；目标 Deployment 的当前健康状态来自已推送镜像的集群部署验证，不能把这次 PipelineRun 标记为成功。流水线失败日志需要在 KubeSphere Jenkins 页面继续定位，属于 `external_blocked` 证据边界。
+
 ## 测试覆盖
 
 | 层级 | 能证明 | 不能证明 |
