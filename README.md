@@ -6,6 +6,14 @@
 
 从 [文档入口](docs/README.md) 开始。
 
+## 架构与数据流
+
+核心链路是：`CLI/HTTP → ZIO 控制面 → Kubernetes API → Flink Kubernetes Operator → Flink CR/Flink 作业`。
+
+- [交互式架构图](docs/diagrams/architecture.html)：组件边界、职责和部署关系。
+- [交互式数据流图](docs/diagrams/dataflow.html)：提交、状态观察、快照和 RustFS 存储链路。
+- [设计与协议](docs/design.md)：Kubernetes API-only 约束、资源模型和状态语义。
+
 ## 最短流程
 
 ```sh
