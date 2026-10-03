@@ -67,6 +67,8 @@ HTTP 控制面由 `sbt "run serve"` 启动，默认监听 `0.0.0.0:8080`。它�
 
 需要更高吞吐时，优先增加连接复用、把轮询改成共享 watch/leader election，再引入 PostgreSQL 连接池。当前实现的高可用证据是两副本跨节点运行和同一 CR 状态，不是已经完成的高并发压测。
 
+目标集群的小样本现场测量（NodePort、每个节点独立请求）为：`/healthz` 20 次平均约 13.6–18.2 ms，`/v1/state` 10 次平均约 96–147.5 ms，后者 P95 约 268.5–301.7 ms。该测量包含网络和 Kubernetes API 延迟，样本量很小，只用于容量基线，不能替代并发压测。
+
 Kubernetes 部署默认使用 Flink CR 作为统一状态源；裸机部署可将最新状态观测写入 PostgreSQL：
 
 ```sh
