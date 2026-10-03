@@ -1,12 +1,15 @@
 package cn.xuyinyin.flinklab.server
 
 import cn.xuyinyin.flinklab.cli.ResourceKind
-import cn.xuyinyin.flinklab.domain.{FlinkResources, FlinkStateSnapshotSpec, SnapshotType}
+import cn.xuyinyin.flinklab.domain.SnapshotType
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.operator.savepoint.SavepointPatch
 import cn.xuyinyin.flinklab.operator.watch.{FlinkStateSnapshotStatus, FlinkStatusSnapshot}
 import cn.xuyinyin.flinklab.state.{KubernetesStateStore, StateJournal, StateKey, StateRecord, StateStore}
+import cn.xuyinyin.flinklab.application.FlinkOperationFactory
+import cn.xuyinyin.flinklab.domain.*
+import cn.xuyinyin.flinklab.operation.{AcceptedOperation, AsyncOperationWorker, OperationStore}
 import zio.*
 
 final case class ApiRequest(
@@ -40,6 +43,65 @@ object KubernetesHttpApi:
 
   def handleWith(api: KubernetesApi, store: StateStore, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
     handle(request, settings).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store)))
+
+  def handleWith(api: KubernetesApi, store: StateStore, worker: AsyncOperationWorker, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
+    routeWithWorker(request, settings, worker, None).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
+
+  def handleWith(api: KubernetesApi, store: StateStore, operationStore: OperationStore, worker: AsyncOperationWorker, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
+    routeWithWorker(request, settings, worker, Some(operationStore)).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
+
+  private def routeWithWorker(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+    (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
+      case ("POST", "v1" :: "deployments" :: Nil) =>
+        for
+          resource <- parseJson(request.body)
+          namespace <- namespaceFor(resource, request.query, settings)
+          body = prepareResource(resource, namespace, settings.defaultSavepointDirectory)
+          operation <- ZIO.fromEither(FlinkOperationFactory.fromDeploymentJson(namespace.namespaceValue, body).left.map(IllegalArgumentException(_)))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+        yield acceptedResponse(accepted, 202)
+      case ("POST", "v1" :: "snapshots" :: Nil) =>
+        for
+          body <- parseJson(request.body)
+          namespace <- namespaceFrom(request.query, settings)
+          operation <- ZIO.fromEither(FlinkOperationFactory.fromSnapshotJson(namespace.namespaceValue, body.render()).left.map(IllegalArgumentException(_)))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+        yield acceptedResponse(accepted, 202)
+      case ("POST", "v1" :: "deployments" :: name :: "savepoint" :: Nil) =>
+        for
+          namespace <- namespaceFrom(request.query, settings)
+          deploymentName <- deploymentName(name)
+          operation = FlinkOperation.Snapshot(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), SnapshotPolicy(cn.xuyinyin.flinklab.domain.SnapshotType.Savepoint))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+        yield acceptedResponse(accepted, 202)
+      case ("POST", "v1" :: "deployments" :: name :: "suspend-savepoint" :: Nil) =>
+        for
+          namespace <- namespaceFrom(request.query, settings)
+          deploymentName <- deploymentName(name)
+          operation = FlinkOperation.Suspend(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), SuspendPolicy.KeepState)
+          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+        yield acceptedResponse(accepted, 202)
+      case ("DELETE", "v1" :: "deployments" :: name :: Nil) =>
+        for
+          namespace <- namespaceFrom(request.query, settings)
+          deploymentName <- deploymentName(name)
+          operation = FlinkOperation.Delete(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), DeletePolicy.Graceful)
+          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+        yield acceptedResponse(accepted, 202)
+      case ("GET", "v1" :: "operations" :: id :: Nil) =>
+        operationStore match
+          case None => ZIO.succeed(ApiResponse(503, errorJson("operation store is not configured")))
+          case Some(store) =>
+            for
+              operationId <- ZIO.fromEither(cn.xuyinyin.flinklab.domain.OperationId.from(id).left.map(IllegalArgumentException(_)))
+              operation <- store.get(operationId)
+            yield operation.map(value => ok(value.json.render())).getOrElse(ApiResponse(404, errorJson("operation not found")))
+      case _ => route(request, settings)
+
+  private def requestId(request: ApiRequest): RequestId = RequestId.from(request.query.getOrElse("requestId", java.util.UUID.randomUUID().toString)).fold(_ => RequestId.generate(), identity)
+
+  private def acceptedResponse(accepted: AcceptedOperation, status: Int): ApiResponse =
+    ApiResponse(status, ujson.Obj("operationId" -> accepted.operationId.operationIdValue, "requestId" -> accepted.requestId.requestIdValue, "state" -> "ACCEPTED", "acceptedAt" -> accepted.acceptedAt.toString).render())
 
   private def route(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match

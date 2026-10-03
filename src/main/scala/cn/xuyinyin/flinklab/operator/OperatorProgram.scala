@@ -4,6 +4,8 @@ import cn.xuyinyin.flinklab.cli.{Command, ResourceKind}
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
+import cn.xuyinyin.flinklab.application.FlinkOperationFactory
+import cn.xuyinyin.flinklab.operation.AsyncOperationWorker
 import cn.xuyinyin.flinklab.operator.savepoint.SavepointPatch
 import cn.xuyinyin.flinklab.operator.watch.{FlinkStateSnapshotStatus, FlinkStatusSnapshot, RetryPolicy, Retrying, WatchStream}
 import zio.*
@@ -33,10 +35,7 @@ object OperatorProgram:
         patchSavepoint(kind, options, suspended = true)
       case Command.Apply(kind, options, dryRun) =>
         val config = resource(kind, options)
-        for
-        output <- ZIO.serviceWithZIO[KubernetesApi](_.apply(config.namespace, config.json, dryRun))
-          _ <- Console.printLine(output.trim)
-        yield ()
+        ZIO.serviceWithZIO[KubernetesApi](_.apply(config.namespace, config.json, dryRun)).flatMap(output => Console.printLine(output.trim))
       case Command.Status(kind, options) =>
         resourceIdentity(kind, options).flatMap { case (namespace, name) =>
           for
@@ -129,6 +128,20 @@ object OperatorProgram:
 
   private def renderSnapshots(states: Map[String, FlinkStateSnapshotStatus]): String =
     ujson.Obj.from(states.toSeq.sortBy(_._1).map { case (name, snapshot) => name -> snapshot.json }).render(indent = 2)
+
+  private def acceptedJson(accepted: cn.xuyinyin.flinklab.operation.AcceptedOperation): String =
+    ujson.Obj("operationId" -> accepted.operationId.operationIdValue, "requestId" -> accepted.requestId.requestIdValue, "state" -> "ACCEPTED", "acceptedAt" -> accepted.acceptedAt.toString).render()
+
+  def executeWithWorker(command: Command): ZIO[KubernetesApi & AsyncOperationWorker, Throwable, Unit] = command match
+    case Command.Apply(_, _, false) =>
+      FlinkOperationFactory.fromCommand(command) match
+        case Left(message) => ZIO.fail(IllegalArgumentException(message))
+        case Right(operation) =>
+          for
+            accepted <- ZIO.environmentWithZIO[KubernetesApi & AsyncOperationWorker](environment => environment.get[AsyncOperationWorker].submit(RequestId.generate(), operation).mapError(error => IllegalArgumentException(error.message)))
+            _ <- Console.printLine(acceptedJson(accepted))
+          yield ()
+    case _ => execute(command)
 
   private def defaultName(kind: ResourceKind): String =
     kind match

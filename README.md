@@ -1,6 +1,6 @@
 # ZIO Flink Operator Control Plane
 
-这是一个 Scala 3 + ZIO 控制面：通过 Kubernetes API 调用 Flink Kubernetes Operator，提交 `FlinkDeployment`、`FlinkSessionJob` 和 `FlinkStateSnapshot`，并观察任务、checkpoint、savepoint 与 Operator 状态。
+这是一个 Scala 3 + ZIO 控制面：通过 Kubernetes API 调用 Flink Kubernetes Operator，提交 `FlinkDeployment`、`FlinkSessionJob` 和 `FlinkStateSnapshot`，并观察任务、checkpoint、savepoint 与 Operator 状态。项目北极星是：**类型化、可审计、可验证结果的 Flink 操作控制面**。
 
 程序不调用 `kubectl`，不直接操作 JobManager。Kubernetes CR 是期望状态和状态来源，Flink Kubernetes Operator 负责实际 reconcile。
 
@@ -26,6 +26,7 @@
 - [交互式 Kubernetes 部署图](docs/diagrams/deployment.html)：GitHub、Jenkins、Registry、两节点和 Flink 运行时。
 - [交互式数据流图](docs/diagrams/dataflow.html)：提交、状态观察、快照和 RustFS 存储链路。
 - [设计与协议](docs/design.md)：Kubernetes API-only 约束、资源模型和状态语义。
+- [设计与协议](docs/design.md)：类型化操作、ResourceObserver、VerificationEngine、worker 和共享操作存储。
 
 ## 最短流程
 
@@ -57,7 +58,7 @@ sbt "run apply state-snapshot --name orders-savepoint --target-kind deployment -
 sbt "run watch state-snapshot --name orders-savepoint --namespace $FLINK_NAMESPACE"
 ```
 
-HTTP 控制面由 `sbt "run serve"` 启动，默认监听 `0.0.0.0:8080`。它提供部署状态、快照创建、列表、查询和删除接口。Kubernetes 部署是一个 Service 加一个两副本 Deployment；每个副本定时从同一 namespace 的 Kubernetes API 读取 CR 状态，因此请求可以落到任一副本。
+HTTP 控制面由 `sbt "run serve"` 启动，默认监听 `0.0.0.0:8080`。写请求返回 `202` 和 `operationId`，状态通过 `GET /v1/operations/<operationId>` 查询；部署状态、快照创建、列表、查询和删除接口仍保留。Kubernetes 部署是一个 Service 加一个两副本 Deployment；每个副本定时从同一 namespace 的 Kubernetes API 读取 CR 状态，因此请求可以落到任一副本。
 
 状态轮询间隔由 `ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS` 控制，默认 15 秒。Kubernetes 模式以 CR 为事实源；PostgreSQL 模式会把轮询得到的状态和最多 100 条生命周期事件写入共享表。
 
@@ -81,7 +82,7 @@ export POSTGRES_PASSWORD='由 Secret 注入'
 sbt "run serve"
 ```
 
-状态字段、HTTP 示例、统一状态接口和 checkpoint/savepoint 边界见 [状态监控](docs/monitoring.md)。
+状态字段、operation lifecycle、HTTP 示例、统一状态接口和 checkpoint/savepoint 边界见 [状态监控](docs/monitoring.md)。
 
 ## 版本与边界
 

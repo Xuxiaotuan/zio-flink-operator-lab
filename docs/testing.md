@@ -11,13 +11,11 @@ sbt -batch assembly
 mvn -B -f job/pom.xml package -DskipTests
 ```
 
-当前本地执行结果：
-
-- SBT：50 tests passed，0 failed，0 ignored。
-- 覆盖 CLI/domain、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
+当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、VerificationEngine、CLI/HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 配置和 operation lifecycle 查询。
+- 覆盖 CLI/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
 - Maven Job：应以本轮命令的 `BUILD SUCCESS` 为准。
 
-当前测试按职责分组：CLI 4、domain 3、fake Kubernetes API 3、Kubernetes HTTP contract 5、savepoint patch 3、watch model 5、watch stream/retry 11、HTTP 控制面 7、状态后端配置 4、状态 journal 3、状态轮询 2。
+测试按职责分组：CLI/domain、typed control-plane、policy、operation store/worker、operation factory、ResourceObserver、fake Kubernetes API、HTTP contract、watch/retry、状态后端和状态轮询。
 
 这些测试默认不连接真实 Kubernetes。HTTP contract test 使用本地 HTTP server，只验证 Kubernetes Java Client 的请求协议。
 
@@ -32,7 +30,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 这证明了提交、Operator reconcile、Pod 启动、Job 完成和两副本统一读取状态。checkpoint/savepoint 的真实路径和 RustFS 写入仍需在带 S3 插件与 Secret 的业务 Job 上单独验收。
 
-KubeSphere 最后一次 PipelineRun 已完成 Git 拉取并进入失败状态；目标 Deployment 的当前健康状态来自已推送镜像的集群部署验证，不能把这次 PipelineRun 标记为成功。流水线失败日志需要在 KubeSphere Jenkins 页面继续定位，属于 `external_blocked` 证据边界。
+PipelineRun 是否成功必须以本轮 KubeSphere PipelineRun 的阶段状态和 Jenkins 日志为准。Jenkins 依赖下载失败、镜像仓库或集群权限问题属于 `external_blocked`，不能用目标 Deployment 的独立健康状态替代 CI/CD 证据。
 
 ## 测试覆盖
 

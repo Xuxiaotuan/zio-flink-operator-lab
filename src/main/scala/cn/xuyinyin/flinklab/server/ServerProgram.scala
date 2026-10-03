@@ -2,6 +2,7 @@ package cn.xuyinyin.flinklab.server
 
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.state.{StatePoller, StateStore}
+import cn.xuyinyin.flinklab.operation.{AsyncOperationWorker, OperationStore}
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 import zio.*
 
@@ -20,15 +21,18 @@ object HttpServerSettings:
     )
 
 object ServerProgram:
-  def run: ZIO[KubernetesApi & StateStore, Throwable, Unit] =
+  def run: ZIO[KubernetesApi & StateStore & AsyncOperationWorker & OperationStore, Throwable, Unit] =
     ZIO.scoped {
       for
         api <- ZIO.service[KubernetesApi]
         store <- ZIO.service[StateStore]
+        worker <- ZIO.service[AsyncOperationWorker]
+        operationStore <- ZIO.service[OperationStore]
+        _ <- operationStore.initialize
         _ <- store.initialize
         _ <- StatePoller.run.forkScoped
         settings = HttpServerSettings.fromEnv(sys.env)
-        running <- ZIO.acquireRelease(start(settings, api, store)) { case (server, executor) =>
+        running <- ZIO.acquireRelease(start(settings, api, store, operationStore, worker)) { case (server, executor) =>
           ZIO.attempt(server.stop(0)).ignore *> ZIO.succeed(executor.shutdown())
         }
         _ <- Console.printLine(s"zio-flink-operator server listening on ${settings.host}:${settings.port}")
@@ -36,7 +40,7 @@ object ServerProgram:
       yield ()
     }
 
-  private def start(settings: HttpServerSettings, api: KubernetesApi, store: StateStore): IO[Throwable, (HttpServer, ExecutorService)] =
+  private def start(settings: HttpServerSettings, api: KubernetesApi, store: StateStore, operationStore: OperationStore, worker: AsyncOperationWorker): IO[Throwable, (HttpServer, ExecutorService)] =
     ZIO.attempt {
       val server = HttpServer.create(new InetSocketAddress(settings.host, settings.port), 0)
       val executor = Executors.newFixedThreadPool(settings.threads)
@@ -52,7 +56,7 @@ object ServerProgram:
             )
             val response = Unsafe.unsafe { implicit unsafe =>
               Runtime.default.unsafe.run(
-                KubernetesHttpApi.handleWith(api, store, request, KubernetesHttpSettings.fromEnv(sys.env))
+                KubernetesHttpApi.handleWith(api, store, operationStore, worker, request, KubernetesHttpSettings.fromEnv(sys.env))
               ).getOrThrowFiberFailure()
             }
             val bytes = response.body.getBytes(StandardCharsets.UTF_8)

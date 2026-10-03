@@ -8,16 +8,16 @@ final case class FlinkJob(
     jarUri: JobJarUri,
     entryClass: String,
     parallelism: Int,
-    upgradeMode: String = "stateless",
-    state: String = "running"
+    stateProtection: StateProtection = StateProtection.Stateless,
+    desiredState: DesiredJobState = DesiredJobState.Running
 ):
   def json: Obj =
     Obj(
       "jarURI" -> jarUri.uriValue,
       "entryClass" -> entryClass,
       "parallelism" -> parallelism,
-      "upgradeMode" -> upgradeMode,
-      "state" -> state
+      "upgradeMode" -> stateProtection.operatorValue,
+      "state" -> desiredState.operatorValue
     )
 
 final case class FlinkDeploymentSpec(

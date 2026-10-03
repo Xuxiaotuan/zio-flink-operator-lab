@@ -11,7 +11,7 @@ Client -> Service -> zio-flink-operator replicas -> Kubernetes API Server
                                       Flink Kubernetes Operator
 ```
 
-HTTP 副本只处理请求，不在每个副本中启动后台 watch。CLI watch 用于显式观察资源。若以后增加后台 controller，需要单独设计 Kubernetes Lease leader election。
+HTTP 副本处理请求；每个写操作由异步 worker 通过 ResourceObserver 观察目标 CR。操作审计必须使用共享 PostgreSQL，避免副本各自持有内存状态。CLI watch 仍用于显式观察资源。
 
 ## 本地 Kubernetes
 
@@ -58,7 +58,7 @@ curl -fsS http://<任一节点>:30882/healthz
 curl -fsS 'http://<任一节点>:30882/v1/state?namespace=bigdata-lab'
 ```
 
-两个副本读取同一个 Kubernetes API Server 和同一组 Flink CR。每个副本都会轮询，因此状态统一但 Kubernetes list 流量随副本数线性增加；当前版本没有 leader election。
+两个副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态统一来自 CR；操作状态统一来自 PostgreSQL OperationStore。每个副本都会轮询，因此状态轮询流量随副本数线性增加；当前版本没有 leader election。
 
 ## RustFS
 
@@ -94,6 +94,7 @@ sbt "run serve"
 
 ```sh
 export ZIO_FLINK_STATE_BACKEND=postgres
+export ZIO_FLINK_OPERATION_STORE=postgres
 export POSTGRES_HOST=100.82.226.63
 export POSTGRES_PORT=30660
 export POSTGRES_DB=xxt
@@ -102,7 +103,7 @@ export POSTGRES_PASSWORD='由 Secret 注入'
 sbt "run serve"
 ```
 
-服务首次启动会创建 `zio_flink_operator_state` 表。表中保存最新的 CR 状态观测和最多 100 条生命周期事件；checkpoint/savepoint 文件仍由 Flink 写入 RustFS。
+服务首次启动会创建 `zio_flink_operator_state` 和 `zio_flink_operations` 表。前者保存 CR 状态观测，后者保存操作状态和审计事件；checkpoint/savepoint 文件仍由 Flink 写入 RustFS。
 
 ## 迁移到目标集群
 

@@ -72,7 +72,9 @@ spec:
                   tar -xzf "/tmp/sbt-${sbt_version}.tgz" -C /tmp
                   export PATH="/tmp/sbt/bin:$PATH"
                   export JAVA_HOME="${JAVA_HOME:-/opt/java/openjdk}"
-                  export SBT_OPTS="-Dhttp.proxyHost=100.95.135.45 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=100.95.135.45 -Dhttps.proxyPort=7890"
+                  export JAVA_TOOL_OPTIONS="-Dhttp.proxyHost=100.95.135.45 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=100.95.135.45 -Dhttps.proxyPort=7890 -Djava.net.useSystemProxies=false"
+                  export SBT_OPTS="-Dhttp.proxyHost=100.95.135.45 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=100.95.135.45 -Dhttps.proxyPort=7890 -Dsbt.boot.directory=/root/.m2/sbt/boot -Dsbt.global.base=/root/.m2/sbt"
+                  export COURSIER_CACHE="/root/.m2/coursier"
                   sbt -batch test assembly
                 '''
               }

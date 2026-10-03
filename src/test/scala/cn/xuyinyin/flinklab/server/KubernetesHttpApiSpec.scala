@@ -1,6 +1,11 @@
 package cn.xuyinyin.flinklab.server
 
 import cn.xuyinyin.flinklab.kubernetes.FakeKubernetesApi
+import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.*
+import cn.xuyinyin.flinklab.operation.{AcceptedOperation, AsyncOperationWorker}
+import cn.xuyinyin.flinklab.operation.InMemoryOperationStore
+import cn.xuyinyin.flinklab.state.KubernetesStateStore
 import zio.*
 import zio.test.*
 
@@ -87,5 +92,29 @@ object KubernetesHttpApiSpec extends ZIOSpecDefault:
         json("namespace").str == "analytics",
         json("items").arr.size == 3
       )
+    },
+    test("routes deployment submission through the typed operation worker") {
+      for
+        fake <- FakeKubernetesApi.make
+        worker = new AsyncOperationWorker:
+          def submit(requestId: RequestId, operation: FlinkOperation) = ZIO.succeed(AcceptedOperation(OperationId.from("op-1").toOption.get, requestId, java.time.Instant.parse("2026-10-03T00:00:00Z")))
+          def process(id: OperationId) = ZIO.fail(ControlPlaneError.OperationNotFound(id))
+        response <- KubernetesHttpApi.handleWith(fake, KubernetesStateStore(fake), worker, ApiRequest("POST", "/v1/deployments", Map("namespace" -> "analytics"), deployment), settings)
+        json = ujson.read(response.body)
+      yield assertTrue(response.status == 202, json("operationId").str == "op-1")
+    },
+    test("returns operation lifecycle from the operation store") {
+      for
+        fake <- FakeKubernetesApi.make
+        store <- InMemoryOperationStore.make
+        resource = ResourceRef(cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace.unsafe("analytics"), ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe("orders"))
+        operation = Operation.accepted(RequestId.from("req-1").toOption.get, FlinkOperation.Resume(resource), resource, java.time.Instant.parse("2026-10-03T00:00:00Z"))
+        _ <- store.create(operation)
+        worker = new AsyncOperationWorker:
+          def submit(requestId: RequestId, operation: FlinkOperation) = ZIO.succeed(AcceptedOperation(OperationId.generate(), requestId, java.time.Instant.now()))
+          def process(id: OperationId) = ZIO.fail(ControlPlaneError.OperationNotFound(id))
+        response <- KubernetesHttpApi.handleWith(fake, KubernetesStateStore(fake), store, worker, ApiRequest("GET", s"/v1/operations/${operation.id.operationIdValue}"), settings)
+        json = ujson.read(response.body)
+      yield assertTrue(response.status == 200, json("state").str == "ACCEPTED", json("events").arr.nonEmpty)
     }
   )

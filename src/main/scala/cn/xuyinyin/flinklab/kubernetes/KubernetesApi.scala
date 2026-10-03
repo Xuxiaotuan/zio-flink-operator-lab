@@ -132,13 +132,17 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
           .mapError(message => Some(IllegalArgumentException(message)))
           .flatMap {
             case event if event.eventType == WatchEventType.Error =>
-              ZIO.fail(Some(IllegalArgumentException(errorMessage(event))))
+              ZIO.fail(Some(watchError(event)))
             case event => ZIO.succeed(event)
           }
     }
 
   private def errorMessage(event: WatchEvent): String =
     event.resource.obj.get("message").map(_.str).filter(_.nonEmpty).getOrElse("Kubernetes watch returned an error event")
+
+  private def watchError(event: WatchEvent): Throwable =
+    val status = event.resource.obj.get("code").flatMap(_.numOpt).map(_.toInt)
+    status.map(code => KubernetesApiError(code, errorMessage(event))).getOrElse(IllegalArgumentException(errorMessage(event)))
 
   private def apiResource(kind: ResourceKind): String =
     kind match
@@ -197,19 +201,16 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
       try
         val responseBody = Option(response.body()).map(_.string()).getOrElse("")
         if response.isSuccessful then responseBody
-        else throw KubernetesApiFailure(response.code(), responseBody)
+        else throw KubernetesApiError(response.code(), responseBody)
       finally response.close()
     }
     effect.retry((Schedule.exponential(50.millis) && Schedule.recurs(settings.maxRetries)).whileInput(isRetryable))
 
   private def isRetryable(error: Throwable): Boolean =
     error match
-      case KubernetesApiFailure(status, _) => status == 429 || status >= 500
+      case KubernetesApiError(status, _) => status == 429 || status >= 500
       case _: java.io.IOException           => true
       case _                                => false
-
-  private final case class KubernetesApiFailure(status: Int, body: String)
-      extends RuntimeException(s"Kubernetes API request failed with HTTP $status: $body")
 
 object KubernetesApiLive:
   def apply(settings: KubernetesApiSettings): KubernetesApiLive =
@@ -218,3 +219,6 @@ object KubernetesApiLive:
 object KubernetesApi:
   val live: ZLayer[Any, Nothing, KubernetesApi] =
     ZLayer.succeed(KubernetesApiLive(KubernetesApiSettings.fromEnv(sys.env)))
+
+final case class KubernetesApiError(status: Int, body: String)
+    extends RuntimeException(s"Kubernetes API request failed with HTTP $status: $body")
