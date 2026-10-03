@@ -11,9 +11,10 @@
     "flinkVersion": "v1_20",
     "jobManager": {"resource": {"cpu": 1, "memory": "1024m"}},
     "taskManager": {"resource": {"cpu": 1, "memory": "1024m"}},
+    "serviceAccount": "flink",
     "job": {
       "jarURI": "local:///opt/flink/examples/streaming/WordCount.jar",
-      "entryClass": "org.apache.flink.examples.java.wordcount.WordCount",
+      "entryClass": "org.apache.flink.streaming.examples.wordcount.WordCount",
       "parallelism": 1,
       "upgradeMode": "stateless",
       "state": "running"

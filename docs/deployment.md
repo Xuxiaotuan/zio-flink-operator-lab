@@ -113,3 +113,15 @@ sbt "run serve"
 5. 先 dry-run，再 apply；分别记录 CR 状态、Flink Pod、Job 状态和快照结果。
 
 目标集群需要单独验证 Operator reconcile、checkpoint、savepoint、恢复、跨节点调度和两个副本读取同一状态。本地部署结果不能替代这些证据。
+
+本轮已在目标集群安装官方 Flink Kubernetes Operator `1.16.1`，命令等价于：
+
+```sh
+helm upgrade --install flink-kubernetes-operator \
+  flink-operator-repo/flink-kubernetes-operator --version 1.16.1 \
+  --namespace flink-operator --create-namespace \
+  --set webhook.create=false \
+  --set watchNamespaces[0]=bigdata-lab
+```
+
+目标集群的 Operator、两副本服务和 `zio-word-count` 示例 Job 已完成一次运行验证；savepoint 仍需把 RustFS endpoint、S3 插件和凭据以目标 Job 的 Secret 方式接入后再验收。

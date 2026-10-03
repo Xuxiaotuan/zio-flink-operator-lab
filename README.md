@@ -61,6 +61,12 @@ HTTP 控制面由 `sbt "run serve"` 启动，默认监听 `0.0.0.0:8080`。它�
 
 状态轮询间隔由 `ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS` 控制，默认 15 秒。Kubernetes 模式以 CR 为事实源；PostgreSQL 模式会把轮询得到的状态和最多 100 条生命周期事件写入共享表。
 
+## 性能评估
+
+当前版本适合低到中等频率的 Flink 控制作业：HTTP 服务默认 8 个阻塞请求线程；每个副本每 15 秒对三类 CR 各发起一次 list，两个副本约为每秒 0.4 次 list 请求。提交和状态查询的实际吞吐取决于 Kubernetes API 延迟、CR 数量和 Operator reconcile 时间，仓库没有把估算当成压测结果。
+
+需要更高吞吐时，优先增加连接复用、把轮询改成共享 watch/leader election，再引入 PostgreSQL 连接池。当前实现的高可用证据是两副本跨节点运行和同一 CR 状态，不是已经完成的高并发压测。
+
 Kubernetes 部署默认使用 Flink CR 作为统一状态源；裸机部署可将最新状态观测写入 PostgreSQL：
 
 ```sh

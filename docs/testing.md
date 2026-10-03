@@ -13,13 +13,24 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果：
 
-- SBT：45 tests passed，0 failed，0 ignored。
+- SBT：50 tests passed，0 failed，0 ignored。
 - 覆盖 CLI/domain、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
 - Maven Job：应以本轮命令的 `BUILD SUCCESS` 为准。
 
-当前测试按职责分组：CLI 4、domain 3、fake Kubernetes API 3、Kubernetes HTTP contract 5、savepoint patch 3、watch model 5、watch stream/retry 11、HTTP 控制面 7、状态后端配置 4。
+当前测试按职责分组：CLI 4、domain 3、fake Kubernetes API 3、Kubernetes HTTP contract 5、savepoint patch 3、watch model 5、watch stream/retry 11、HTTP 控制面 7、状态后端配置 4、状态 journal 3、状态轮询 2。
 
 这些测试默认不连接真实 Kubernetes。HTTP contract test 使用本地 HTTP server，只验证 Kubernetes Java Client 的请求协议。
+
+## 目标集群验证
+
+本轮目标集群验证记录：
+
+- K8s `v1.23.17`，两节点 `xjw`、`xxt`；Flink Kubernetes Operator `1.16.1` 已 Ready，并只 watch `bigdata-lab`。
+- `zio-flink-operator` 两个 Pod 分别调度到 `xjw`、`xxt`，NodePort 为 `30882`；从两台节点访问 `/healthz` 均返回 `{"status":"ok"}`。
+- 从两台节点访问 `/v1/state?namespace=bigdata-lab` 都读到同一个 `zio-word-count` CR，backend 为 `kubernetes`，生命周期为 `STABLE`。
+- 通过 HTTP 提交 `FlinkDeployment` 后，Operator 让 JobManager、TaskManager 进入 Ready，Job 进入 `FINISHED`，并产生 jobId `475c0a0e218426706464212870d4e5cf`。
+
+这证明了提交、Operator reconcile、Pod 启动、Job 完成和两副本统一读取状态。checkpoint/savepoint 的真实路径和 RustFS 写入仍需在带 S3 插件与 Secret 的业务 Job 上单独验收。
 
 ## 测试覆盖
 
