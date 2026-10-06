@@ -39,7 +39,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
       for
         records <- Ref.make(Vector.empty[String])
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"9"}}""")
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"9","generation":1}}""")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")

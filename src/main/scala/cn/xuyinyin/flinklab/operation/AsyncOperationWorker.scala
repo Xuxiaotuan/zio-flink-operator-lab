@@ -74,7 +74,10 @@ final class DefaultAsyncOperationWorker(
           val target = observationTarget(id, current)
           for
             _ <- transition(id, OperationEvent.VerificationStarted(Instant.now()))
-            evidence <- awaitVerification(current.command, target, metadata(response)._1)
+            expectedGeneration = current.command match
+              case FlinkOperation.Snapshot(_, _) => None
+              case _ => metadata(response)._1
+            evidence <- awaitVerification(current.command, target, expectedGeneration)
             _ <- transition(id, OperationEvent.Observed(Instant.now(), evidence.observedGeneration))
             result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now()))
           yield result
