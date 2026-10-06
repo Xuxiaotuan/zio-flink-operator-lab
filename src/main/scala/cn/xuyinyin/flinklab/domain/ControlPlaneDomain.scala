@@ -66,7 +66,7 @@ object StateProtection:
   def parse(value: String): Either[String, StateProtection] =
     value.trim.toLowerCase match
       case "stateless"  => Right(Stateless)
-      case "last-state" => Right(LastState)
+      case "last-state" | "laststate" => Right(LastState)
       case "savepoint"  => Right(Savepoint)
       case other => Left(s"unknown state protection: $other (use stateless, last-state or savepoint)")
 

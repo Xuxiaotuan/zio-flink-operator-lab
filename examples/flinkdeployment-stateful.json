@@ -10,6 +10,13 @@
     "imagePullPolicy": "IfNotPresent",
     "flinkVersion": "v1_20",
     "serviceAccount": "flink",
+    "podTemplate": {
+      "spec": {
+        "imagePullSecrets": [
+          {"name": "xxt-harbor-pull"}
+        ]
+      }
+    },
     "flinkConfiguration": {
       "execution.checkpointing.interval": "5s",
       "state.checkpoints.dir": "s3://flink-savepoints/zio-e2e/checkpoints/",

@@ -21,6 +21,11 @@ object ControlPlaneDomainSpec extends ZIOSpecDefault:
         val job = FlinkJob(jar, "example.WordCount", 2, StateProtection.Savepoint)
         assertTrue(job.json("upgradeMode").str == "savepoint")
       },
+      test("round trips last-state operations from the Kubernetes operation CR") {
+        val spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.LastState))
+        val operation = Operation.accepted(RequestId.from("req-last-state").toOption.get, FlinkOperation.Upgrade(resource, spec, UpgradePolicy(StateProtection.LastState, FallbackPolicy.AllowLastState)), resource, Instant.parse("2026-10-03T00:00:00Z"))
+        assertTrue(OperationCodec.fromJson(OperationCodec.json(operation)).isRight)
+      },
       test("rejects an invalid stateless fallback policy") {
         assertTrue(UpgradePolicy(StateProtection.Stateless, FallbackPolicy.AllowLastState).validate.isLeft)
       },

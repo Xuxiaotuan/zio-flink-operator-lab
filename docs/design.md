@@ -54,15 +54,15 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 请求接受和操作完成是两个结果。HTTP/CLI 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。PolicyEngine 不通过时不会写 Kubernetes。验证会持续观察，只有 `Evidence` 同时满足资源身份、UID、提交后的 generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；确定失败进入 `Failed`，等待超时进入 `TimedOut`，提交请求结果不确定进入 `Uncertain`。
 
-严格 savepoint 策略的语义是：`StateProtection.Savepoint + FallbackPolicy.Forbidden` 在没有 savepoint 存储证据时直接拒绝；即使 Operator 后续表现为 last-state，也不能把操作标记为成功。网络中断使用 `Uncertain`，被新操作覆盖使用 `Superseded`，超时使用 `TimedOut`。
+严格 savepoint 策略的语义是：`StateProtection.Savepoint + FallbackPolicy.Forbidden` 在 Operator 的 `lastReconciledSpec` 显式表现为非 savepoint 时拒绝；`AllowLastState` 允许该结果完成，但会追加 `FALLBACK_DETECTED` 审计事件。网络中断使用 `Uncertain`，被新操作覆盖使用 `Superseded`，超时使用 `TimedOut`。
 
 ## 当前实现边界
 
 1. CLI apply 和 HTTP 写请求统一生成 `FlinkOperation`，服务返回 `operationId`。
 2. `ResourceObserver` 先 list，再用 list 的 `resourceVersion` watch；收到 410 Gone 会重新 list。
 3. `VerificationEngine` 使用 `Evidence` 校验 UID、generation、observedGeneration、reconciliation 和 Job 状态。
-4. `AsyncOperationWorker` 执行提交、观察、验证和失败转移；Kubernetes `FlinkOperationLock` CR 保护跨副本的资源级互斥，`OperationMutex` 保护进程内副作用。PostgreSQL 后端使用行锁保护共享操作记录。
-5. 真实 checkpoint/savepoint 路径和恢复结果仍需目标集群带 RustFS 插件和 Secret 的作业验收。
+4. `AsyncOperationWorker` 执行提交、观察、验证和失败转移；Kubernetes `FlinkOperationLock` CR 保护跨副本的资源级互斥，带 `leaseUntil` 的过期锁可按 UID 接管，`OperationMutex` 保护进程内副作用。PostgreSQL 后端使用行锁保护共享操作记录。
+5. 真实 checkpoint/savepoint 路径和恢复结果需要目标集群带 RustFS 插件、Secret 和 Registry pull secret 的作业验收。
 
 ## 资源边界
 

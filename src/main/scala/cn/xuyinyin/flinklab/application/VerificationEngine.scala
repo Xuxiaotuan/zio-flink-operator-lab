@@ -22,7 +22,8 @@ final case class Evidence(
     raw: String,
     savepointDirectory: Option[SnapshotPath] = None,
     snapshotError: Option[String] = None,
-    snapshotFailures: Option[String] = None
+    snapshotFailures: Option[String] = None,
+    actualProtection: Option[ActualProtection] = None
 ):
   def audit(reason: String): VerificationEvidence =
     VerificationEvidence(resource, resourceVersion, uid, generation, observedGeneration, snapshotState, snapshotPath, reason)
@@ -40,7 +41,7 @@ object Evidence:
       case _ =>
         val status = FlinkStatusSnapshot.fromJsonString(observation.payload).toOption
         val configuration = scala.util.Try(ujson.read(observation.payload)).toOption.flatMap(_.obj.get("spec").flatMap(_.objOpt)).flatMap(_.get("flinkConfiguration")).flatMap(_.objOpt).flatMap(_.get("state.savepoints.dir")).flatMap(_.strOpt).flatMap(SnapshotPath.from(_).toOption)
-        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload, configuration)
+        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload, configuration, actualProtection = actualProtection(observation.payload, status))
 
   private def reconciliation(value: Option[String], error: Option[String]): ReconciliationState =
     if error.exists(_.trim.nonEmpty) then ReconciliationState.Error
@@ -56,6 +57,23 @@ object Evidence:
     case Some("FINISHED") => JobState.Finished
     case Some("FAILED") => JobState.Failed
     case _ => JobState.Unknown
+
+  private def actualProtection(raw: String, status: Option[FlinkStatusSnapshot]): Option[ActualProtection] =
+    val mode = for
+      parsed <- scala.util.Try(ujson.read(raw)).toOption
+      statusObject <- parsed.obj.get("status").flatMap(_.objOpt)
+      reconciliation <- statusObject.get("reconciliationStatus").flatMap(_.objOpt)
+      reconciled <- reconciliation.get("lastReconciledSpec").flatMap(_.strOpt)
+      spec <- scala.util.Try(ujson.read(reconciled)).toOption.flatMap(_.obj.get("spec").flatMap(_.objOpt))
+      job <- spec.get("job").flatMap(_.objOpt)
+      upgradeMode <- job.get("upgradeMode").flatMap(_.strOpt)
+    yield upgradeMode.trim.toLowerCase
+    mode.flatMap {
+      case "last-state" | "laststate" => Some(ActualProtection.LastState)
+      case "savepoint" => status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)).map(ActualProtection.Savepoint.apply)
+      case "stateless" => Some(ActualProtection.EmptyState)
+      case _ => None
+    }
 
 final case class VerificationResult(evidence: Evidence, reason: String)
 
@@ -92,8 +110,24 @@ object DefaultVerificationEngine extends VerificationEngine:
           else
             val reason = evidence.snapshotError.orElse(evidence.snapshotFailures).getOrElse("snapshot has not completed with a result path")
             Left(ControlPlaneError.VerificationFailed(reason))
+        case FlinkOperation.Upgrade(_, _, policy) =>
+          val fallback = evidence.actualProtection.collect { case actual if !matches(policy.protection, actual) => actual }
+          fallback match
+            case Some(ActualProtection.LastState) if policy.fallback == FallbackPolicy.AllowLastState => ready(evidence, "last-state fallback accepted")
+            case Some(actual) => Left(ControlPlaneError.VerificationFailed(s"requested ${policy.protection} but observed ${actual}"))
+            case None => ready(evidence, s"job is ${evidence.jobState} and reconciled")
         case FlinkOperation.Delete(_, _) => Right(VerificationResult(evidence, "delete acknowledged"))
         case _ =>
-          if (evidence.jobState == JobState.Running || evidence.jobState == JobState.Finished) && evidence.reconciliation == ReconciliationState.Ready then
-            Right(VerificationResult(evidence, s"job is ${evidence.jobState} and reconciled"))
-          else Left(ControlPlaneError.VerificationFailed(s"expected RUNNING or FINISHED with READY reconciliation, observed ${evidence.jobState}/${evidence.reconciliation}"))
+          ready(evidence, s"job is ${evidence.jobState} and reconciled")
+
+  private def matches(requested: StateProtection, actual: ActualProtection): Boolean =
+    (requested, actual) match
+      case (StateProtection.Stateless, ActualProtection.EmptyState) => true
+      case (StateProtection.LastState, ActualProtection.LastState) => true
+      case (StateProtection.Savepoint, ActualProtection.Savepoint(_)) => true
+      case _ => false
+
+  private def ready(evidence: Evidence, reason: String): Either[ControlPlaneError, VerificationResult] =
+    if (evidence.jobState == JobState.Running || evidence.jobState == JobState.Finished) && evidence.reconciliation == ReconciliationState.Ready then
+      Right(VerificationResult(evidence, reason))
+    else Left(ControlPlaneError.VerificationFailed(s"expected RUNNING or FINISHED with READY reconciliation, observed ${evidence.jobState}/${evidence.reconciliation}"))

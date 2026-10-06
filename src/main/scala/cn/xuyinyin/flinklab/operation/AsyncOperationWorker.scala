@@ -105,6 +105,7 @@ final class DefaultAsyncOperationWorker(
               case _ => metadata(response)._1
             evidence <- awaitVerification(current.command, target, expectedGeneration)
             _ <- transition(id, OperationEvent.Observed(Instant.now(), evidence.observedGeneration))
+            _ <- recordFallback(id, current, evidence)
             result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now(), Some(evidence.audit("verification succeeded"))))
           yield result
     yield completed
@@ -174,6 +175,19 @@ final class DefaultAsyncOperationWorker(
       .unit
 
   private def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation] = store.transition(id, event)
+
+  private def recordFallback(id: OperationId, operation: Operation, evidence: Evidence): IO[ControlPlaneError, Unit] =
+    operation.command match
+      case FlinkOperation.Upgrade(_, _, policy) if policy.fallback == FallbackPolicy.AllowLastState && evidence.actualProtection.contains(ActualProtection.LastState) && !evidenceMatches(policy.protection, evidence.actualProtection.get) && !operation.events.exists(_.isInstanceOf[OperationEvent.FallbackDetected]) =>
+        transition(id, OperationEvent.FallbackDetected(Instant.now(), policy.protection, ActualProtection.LastState)).unit
+      case _ => ZIO.unit
+
+  private def evidenceMatches(requested: StateProtection, actual: ActualProtection): Boolean =
+    (requested, actual) match
+      case (StateProtection.Stateless, ActualProtection.EmptyState) => true
+      case (StateProtection.LastState, ActualProtection.LastState) => true
+      case (StateProtection.Savepoint, ActualProtection.Savepoint(_)) => true
+      case _ => false
 
   private def terminalize(id: OperationId, error: ControlPlaneError): IO[ControlPlaneError, Unit] =
     val event = error match
