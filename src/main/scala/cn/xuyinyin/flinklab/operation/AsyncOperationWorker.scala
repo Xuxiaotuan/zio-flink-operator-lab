@@ -44,7 +44,12 @@ final class DefaultAsyncOperationWorker(
   override def process(id: OperationId): IO[ControlPlaneError, Operation] = mutex.withPermit {
     for
       current <- getRequired(id)
-      completed <- coordinator.withLock(current.resource, id)(runOperation(id, current))
+      completed <- if current.state != OperationState.Accepted then ZIO.succeed(current)
+        else
+          for
+            claimed <- transition(id, OperationEvent.ValidationStarted(Instant.now()))
+            result <- coordinator.withLock(claimed.resource, id)(runOperation(id, claimed))
+          yield result
     yield completed
   }.catchAll { error =>
     terminalize(id, error) *> ZIO.fail(error)
@@ -52,7 +57,6 @@ final class DefaultAsyncOperationWorker(
 
   private def runOperation(id: OperationId, current: Operation): IO[ControlPlaneError, Operation] =
     for
-      _ <- transition(id, OperationEvent.ValidationStarted(Instant.now()))
       observed <- currentObservation(current)
       validated <- policy.validate(current.command, observed)
       _ <- transition(id, OperationEvent.ValidationPassed(Instant.now()))
