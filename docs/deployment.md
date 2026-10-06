@@ -68,6 +68,8 @@ savepoint 使用独立 bucket：
 s3://flink-savepoints/zio-flink-operator/
 ```
 
+目标集群已有 `rustfs` Service（9000）和 `rustfs-credentials` Secret。真实快照验收使用 [examples/flinkdeployment-stateful.json](../examples/flinkdeployment-stateful.json)：它对应 Pipeline 构建的 `zio-flink-stateful-job` 镜像，镜像激活官方 Flink S3 文件系统插件，并通过 `kubernetes.env.secretKeyRef` 将 Secret 注入 Flink Pod。Flink 1.20 的 S3 插件、endpoint、path-style 和凭据配置遵循 [官方 S3 文件系统文档](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/deployment/filesystems/s3/)。
+
 本地默认前缀：
 
 ```text

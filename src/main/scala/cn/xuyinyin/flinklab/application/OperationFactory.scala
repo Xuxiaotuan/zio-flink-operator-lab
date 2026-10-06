@@ -34,7 +34,7 @@ object FlinkOperationFactory:
       spec <- objectValue(value, "spec")
       _ <- ensureKeys(value.obj, Set("apiVersion", "kind", "metadata", "spec"), "deployment")
       _ <- ensureKeys(metadata, Set("name", "namespace"), "deployment.metadata")
-      _ <- ensureKeys(spec, Set("image", "imagePullPolicy", "flinkVersion", "jobManager", "taskManager", "job", "serviceAccount", "flinkConfiguration"), "deployment.spec")
+      _ <- ensureKeys(spec, Set("image", "imagePullPolicy", "flinkVersion", "jobManager", "taskManager", "job", "serviceAccount", "flinkConfiguration", "podTemplate"), "deployment.spec")
       job = spec.get("job").flatMap(_.objOpt).getOrElse(Map.empty[String, ujson.Value])
       _ <- ensureKeys(job, Set("jarURI", "entryClass", "parallelism", "upgradeMode", "state", "args", "initialSavepointPath", "allowNonRestoredState"), "deployment.spec.job")
       resolvedNamespace <- Namespace.from(namespace)
@@ -54,7 +54,8 @@ object FlinkOperationFactory:
       imagePullPolicy <- string(spec, "imagePullPolicy").map(_.toLowerCase).filter(_ != "ifnotpresent").map(value => Left(s"unsupported imagePullPolicy: $value")).getOrElse(Right(()))
       serviceAccount = string(spec, "serviceAccount")
       flinkConfiguration <- configuration(spec)
-    yield FlinkOperation.Deploy(FlinkDeploymentSpec(resolvedNamespace, resolvedName, image, flinkVersion, FlinkJob(jar, entryClass, parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState), serviceAccount, flinkConfiguration.get("state.savepoints.dir"), flinkConfiguration, jobManagerResources, taskManagerResources))
+      podTemplate <- spec.get("podTemplate").map(value => value.objOpt.map(entries => ujson.Obj.from(entries)).toRight("deployment.spec.podTemplate must be an object").map(Some(_))).getOrElse(Right(None))
+    yield FlinkOperation.Deploy(FlinkDeploymentSpec(resolvedNamespace, resolvedName, image, flinkVersion, FlinkJob(jar, entryClass, parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState), serviceAccount, flinkConfiguration.get("state.savepoints.dir"), flinkConfiguration, jobManagerResources, taskManagerResources, podTemplate))
 
   def fromSnapshotJson(namespace: String, raw: String): Either[String, FlinkOperation] =
     for

@@ -77,6 +77,7 @@ object OperationCodec:
       configuration: Map[String, String] = spec.get("flinkConfiguration").flatMap(_.objOpt).map(_.toSeq.flatMap { case (key, item) => item.strOpt.orElse(item.numOpt.map(_.toString)).orElse(item.boolOpt.map(_.toString)).map(value => key -> value) }.toMap).getOrElse(Map.empty)
       jobManagerResources = processResources(spec, "jobManager")
       taskManagerResources = processResources(spec, "taskManager")
+      podTemplate = spec.get("podTemplate").flatMap(_.objOpt.map(entries => ujson.Obj.from(entries)))
     yield FlinkDeploymentSpec(
       namespace,
       name,
@@ -87,7 +88,8 @@ object OperationCodec:
       configuration.get("state.savepoints.dir"),
       configuration,
       jobManagerResources,
-      taskManagerResources
+      taskManagerResources,
+      podTemplate
     )
 
   private def resourceRef(value: ujson.Value): Either[String, ResourceRef] =

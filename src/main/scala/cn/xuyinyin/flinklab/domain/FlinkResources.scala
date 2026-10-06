@@ -40,7 +40,8 @@ final case class FlinkDeploymentSpec(
     savepointDirectory: Option[String] = None,
     flinkConfiguration: Map[String, String] = Map.empty,
     jobManagerResources: FlinkProcessResources = FlinkProcessResources(),
-    taskManagerResources: FlinkProcessResources = FlinkProcessResources()
+    taskManagerResources: FlinkProcessResources = FlinkProcessResources(),
+    podTemplate: Option[ujson.Obj] = None
 ):
   def json: Obj =
     val spec = Obj(
@@ -54,6 +55,7 @@ final case class FlinkDeploymentSpec(
     serviceAccount.foreach(value => spec("serviceAccount") = value)
     val configuration = flinkConfiguration ++ savepointDirectory.map("state.savepoints.dir" -> _)
     if configuration.nonEmpty then spec("flinkConfiguration") = Obj.from(configuration.toSeq.sortBy(_._1).map((key, value) => key -> Str(value)))
+    podTemplate.foreach(value => spec("podTemplate") = value)
     spec
 
   def resource: Obj =

@@ -6,6 +6,7 @@ target/scala-3.3.5/classes/
 target/scala-3.3.5/test-classes/
 target/test-reports/
 target/test-reports-zio/
-job/target/
+job/target/*
+!job/target/zio-flink-wordcount-0.1.0.jar
 docs/
 examples/

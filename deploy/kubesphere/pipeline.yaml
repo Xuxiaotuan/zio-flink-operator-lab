@@ -85,6 +85,7 @@ spec:
                   export JAVA_TOOL_OPTIONS="-Dhttp.proxyHost=100.95.135.45 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=100.95.135.45 -Dhttps.proxyPort=7890 -Djava.net.useSystemProxies=false"
                   export SBT_OPTS="-Dhttp.proxyHost=100.95.135.45 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=100.95.135.45 -Dhttps.proxyPort=7890 -Dsbt.boot.directory=/root/.m2/sbt/boot -Dsbt.global.base=/root/.m2/sbt"
                   export COURSIER_CACHE="/root/.m2/coursier"
+                  mvn -B -f job/pom.xml package -DskipTests
                   sbt -batch test assembly
                 '''
               }
@@ -104,6 +105,11 @@ spec:
                     docker push "$image:$tag"
                     docker push "$image:latest"
                     printf '%s\n' "$image:$tag" > .image
+                    flink_image="$REGISTRY/xxt/zio-flink-stateful-job"
+                    docker build -f job/Dockerfile -t "$flink_image:$tag" -t "$flink_image:latest" .
+                    docker push "$flink_image:$tag"
+                    docker push "$flink_image:latest"
+                    printf '%s\n' "$flink_image:$tag" > .flink-image
                   '''
                 }
               }

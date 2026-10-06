@@ -61,6 +61,26 @@ object MutationSafetySpec extends ZIOSpecDefault:
       }
       assertTrue(result.exists(value => value("spec")("job")("upgradeMode").str == "savepoint" && value("spec")("job")("state").str == "suspended" && value("spec")("flinkConfiguration").obj.get("execution.checkpointing.interval").contains(ujson.Str("10s"))))
     },
+    test("HTTP parsing preserves podTemplate secret injection") {
+      val value = ujson.read(body)
+      value("spec")("podTemplate") = ujson.Obj(
+        "spec" -> ujson.Obj(
+          "containers" -> ujson.Arr(
+            ujson.Obj(
+              "name" -> "flink-main-container",
+              "env" -> ujson.Arr(
+                ujson.Obj("name" -> "AWS_ACCESS_KEY_ID", "valueFrom" -> ujson.Obj("secretKeyRef" -> ujson.Obj("name" -> "rustfs-credentials", "key" -> "access-key")))
+              )
+            )
+          )
+        )
+      )
+      val result = FlinkOperationFactory.fromDeploymentJson("analytics", value.render()).map {
+        case FlinkOperation.Deploy(spec) => spec.resource
+        case _ => ujson.Null
+      }
+      assertTrue(result.exists(_.obj.get("spec").flatMap(_.objOpt).flatMap(_.get("podTemplate")).nonEmpty))
+    },
     test("unknown deployment fields cannot be silently discarded") {
       val value = ujson.read(body)
       value("spec")("podTemplte") = ujson.Obj()
