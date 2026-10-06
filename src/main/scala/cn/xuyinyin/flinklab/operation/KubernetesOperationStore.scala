@@ -17,8 +17,8 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
     for
       current <- get(id).flatMap(ZIO.fromOption(_).orElseFail(ControlPlaneError.OperationNotFound(id)))
       next <- ZIO.fromEither(current.advance(event))
-      _ <- api.apply(next.resource.namespace, KubernetesOperationResource.render(next), dryRun = false)
-        .mapError(error => mapError(id, error))
+      _ <- api.patch(next.resource.namespace, ResourceKind.Operation, id.operationIdValue, KubernetesOperationResource.render(next))
+        .mapError(error => transitionError(id, error))
     yield next
 
   override def get(id: OperationId): IO[ControlPlaneError, Option[Operation]] =
@@ -47,6 +47,9 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
     error match
       case KubernetesApiError(409, _) => ControlPlaneError.OperationAlreadyExists(id)
       case _ => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
+
+  private def transitionError(id: OperationId, error: Throwable): ControlPlaneError =
+    ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
 
 object KubernetesOperationResource:
   def render(operation: Operation): String =

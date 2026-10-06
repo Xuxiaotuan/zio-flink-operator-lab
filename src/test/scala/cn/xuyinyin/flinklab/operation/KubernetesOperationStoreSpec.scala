@@ -25,7 +25,7 @@ object KubernetesOperationStoreSpec extends ZIOSpecDefault:
           def get(namespace: Namespace, kind: ResourceKind, name: String) = raw.get.map(_.getOrElse(""))
           override def list(namespace: Namespace, kind: ResourceKind) = raw.get.map(value => s"{\"items\":[${value.getOrElse("{}")}]}")
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = raw.set(None).as("deleted")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          override def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = raw.set(Some(patch)).as(patch)
         store = new KubernetesOperationStore(api)
         _ <- store.create(operation)
         updated <- store.transition(operation.id, OperationEvent.ValidationStarted(Instant.parse("2026-10-03T00:00:01Z")))
