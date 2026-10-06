@@ -50,7 +50,17 @@ spec:
                 deleteDir()
                 sh '''
                   set -eu
-                  git clone --depth 1 --branch "$SOURCE_BRANCH" "$SOURCE_REPOSITORY" .
+                  for attempt in 1 2 3; do
+                    find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+                    if git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=60 clone --depth 1 --branch "$SOURCE_BRANCH" "$SOURCE_REPOSITORY" .; then
+                      break
+                    fi
+                    if [ "$attempt" -eq 3 ]; then
+                      echo "source clone failed after $attempt attempts" >&2
+                      exit 128
+                    fi
+                    sleep $((attempt * 5))
+                  done
                   git config --global --add safe.directory "$PWD"
                   git rev-parse --short=12 HEAD > .git-short
                 '''

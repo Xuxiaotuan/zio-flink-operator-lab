@@ -24,5 +24,24 @@ object PostgresOperationStoreSpec extends ZIOSpecDefault:
       val operation = Operation.accepted(RequestId.from("req-1").toOption.get, FlinkOperation.Resume(resource), resource, Instant.parse("2026-10-03T00:00:00Z"))
       val restored = OperationCodec.fromJson(OperationCodec.json(operation))
       assertTrue(restored.exists(value => value.id == operation.id && value.state == OperationState.Accepted && value.resource == resource))
+    },
+    test("preserves deployment protection and storage settings") {
+      val resource = ResourceRef(Namespace.unsafe("analytics"), ResourceKind.Deployment, DeploymentName.unsafe("orders"))
+      val spec = FlinkDeploymentSpec(
+        resource.namespace,
+        resource.name,
+        "registry/flink:1.20.1",
+        "v1_20",
+        FlinkJob(JobJarUri.unsafe("s3://jobs/orders.jar"), "example.Orders", 3, StateProtection.Savepoint, DesiredJobState.Suspended),
+        Some("flink-runner"),
+        Some("s3://flink-savepoints/zio-flink-operator")
+      )
+      val operation = Operation.accepted(RequestId.from("req-config").toOption.get, FlinkOperation.Deploy(spec), resource, Instant.parse("2026-10-03T00:00:00Z"))
+      val restored = OperationCodec.fromJson(OperationCodec.json(operation))
+      assertTrue(restored.exists {
+        case Operation(_, _, FlinkOperation.Deploy(value), _, _, _, _, _) =>
+          value.job.stateProtection == StateProtection.Savepoint && value.job.desiredState == DesiredJobState.Suspended && value.serviceAccount.contains("flink-runner") && value.savepointDirectory.contains("s3://flink-savepoints/zio-flink-operator")
+        case _ => false
+      })
     }
   )

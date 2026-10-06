@@ -48,5 +48,13 @@ object OperationStoreSpec extends ZIOSpecDefault:
           first <- controlPlane.accept(RequestId.from("req-idempotent").toOption.get, FlinkOperation.Resume(resource))
           second <- controlPlane.accept(RequestId.from("req-idempotent").toOption.get, FlinkOperation.Resume(resource))
         yield assertTrue(first.operationId == second.operationId)
+      },
+      test("supersedes an older active operation for the same resource") {
+        for
+          controlPlane <- ZIO.service[FlinkControlPlane]
+          first <- controlPlane.accept(RequestId.from("req-old").toOption.get, FlinkOperation.Resume(resource))
+          second <- controlPlane.accept(RequestId.from("req-new").toOption.get, FlinkOperation.Restart(resource, UpgradePolicy(StateProtection.LastState, FallbackPolicy.Forbidden)))
+          old <- controlPlane.get(first.operationId)
+        yield assertTrue(second.operationId != first.operationId, old.exists(_.state == OperationState.Superseded))
       }
     ).provide(InMemoryOperationStore.layer, FlinkControlPlane.live)

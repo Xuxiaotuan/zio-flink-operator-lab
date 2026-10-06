@@ -12,6 +12,13 @@ trait OperationStore:
   def list: IO[ControlPlaneError, List[Operation]]
   def findByRequestId(requestId: RequestId): IO[ControlPlaneError, Option[Operation]] =
     list.map(_.find(_.requestId == requestId))
+  def supersedeActive(resource: ResourceRef, replacement: OperationId): IO[ControlPlaneError, Unit] =
+    list.flatMap { operations =>
+      ZIO.foreachDiscard(operations.filter(operation =>
+        operation.id != replacement && operation.resource == resource &&
+          !Set(OperationState.Completed, OperationState.Failed, OperationState.Superseded, OperationState.TimedOut, OperationState.Uncertain).contains(operation.state)
+      ))(operation => transition(operation.id, OperationEvent.Superseded(java.time.Instant.now(), replacement)).unit)
+    }
 
 final class InMemoryOperationStore private (ref: Ref[Map[OperationId, Operation]]) extends OperationStore:
   override def create(operation: Operation): IO[ControlPlaneError, Unit] =
@@ -76,7 +83,7 @@ final class DefaultFlinkControlPlane(store: OperationStore) extends FlinkControl
       case Some(existing) => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))
       case None =>
         val accepted = Operation.accepted(requestId, operation, resource, now)
-        store.create(accepted).as(AcceptedOperation(accepted.id, requestId, now)).catchSome {
+        store.create(accepted) *> store.supersedeActive(resource, accepted.id).as(AcceptedOperation(accepted.id, requestId, now)).catchSome {
           case ControlPlaneError.OperationAlreadyExists(_) =>
             store.findByRequestId(requestId).flatMap {
               case Some(existing) => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))

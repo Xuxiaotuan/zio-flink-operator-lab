@@ -65,7 +65,21 @@ object OperationCodec:
       name <- string(metadata, "name").toRight("spec name is required").flatMap(DeploymentName.from)
       jar <- string(job, "jarURI").toRight("job jarURI is required").flatMap(JobJarUri.from)
       parallelism <- number(job, "parallelism").toRight("job parallelism is required")
-    yield FlinkDeploymentSpec(namespace, name, string(spec, "image").getOrElse("flink:1.20.1"), string(spec, "flinkVersion").getOrElse("v1_20"), FlinkJob(jar, string(job, "entryClass").getOrElse("org.apache.flink.streaming.examples.wordcount.WordCount"), parallelism))
+      protection <- string(job, "upgradeMode").map(StateProtection.parse).getOrElse(Right(StateProtection.Stateless))
+      desiredState <- string(job, "state").map(_.toLowerCase match
+        case "running" => Right(DesiredJobState.Running)
+        case "suspended" => Right(DesiredJobState.Suspended)
+        case other => Left(s"unknown desired job state: $other")
+      ).getOrElse(Right(DesiredJobState.Running))
+    yield FlinkDeploymentSpec(
+      namespace,
+      name,
+      string(spec, "image").getOrElse("flink:1.20.1"),
+      string(spec, "flinkVersion").getOrElse("v1_20"),
+      FlinkJob(jar, string(job, "entryClass").getOrElse("org.apache.flink.streaming.examples.wordcount.WordCount"), parallelism, protection, desiredState),
+      string(spec, "serviceAccount"),
+      spec.get("flinkConfiguration").flatMap(_.objOpt).flatMap(string(_, "state.savepoints.dir"))
+    )
 
   private def resourceRef(value: ujson.Value): Either[String, ResourceRef] =
     val obj = value.obj
@@ -92,12 +106,30 @@ object OperationCodec:
       case "WAITING_FOR_OBSERVATION" => OperationEvent.WaitingForObservation(at)
       case "OBSERVED" => OperationEvent.Observed(at, number(obj, "observedGeneration").flatMap(Generation.from(_).toOption))
       case "RECONCILIATION_STARTED" => OperationEvent.ReconciliationStarted(at)
+      case "SNAPSHOT_STARTED" => OperationEvent.SnapshotStarted(at, snapshotValue(obj))
+      case "SNAPSHOT_COMPLETED" => OperationEvent.SnapshotCompleted(at, snapshotValue(obj))
+      case "FALLBACK_DETECTED" =>
+        val requested = string(obj, "requestedProtection").toRight("requestedProtection is required").flatMap(StateProtection.parse).fold(error => throw IllegalArgumentException(error), identity)
+        val actual = string(obj, "actualProtection").toRight("actualProtection is required").flatMap(actualProtection).fold(error => throw IllegalArgumentException(error), identity)
+        OperationEvent.FallbackDetected(at, requested, actual)
       case "VERIFICATION_STARTED" => OperationEvent.VerificationStarted(at)
       case "VERIFICATION_SUCCEEDED" => OperationEvent.VerificationSucceeded(at)
       case "FAILED" => OperationEvent.Failed(at, string(obj, "reason").getOrElse("operation failed"))
       case "TIMED_OUT" => OperationEvent.TimedOut(at, string(obj, "reason").getOrElse("operation timed out"))
+      case "SUPERSEDED" => OperationEvent.Superseded(at, OperationId.from(string(obj, "replacedBy").getOrElse("")).fold(error => throw IllegalArgumentException(error), identity))
       case "UNCERTAIN" => OperationEvent.Uncertain(at, string(obj, "reason").getOrElse("operation uncertain"))
       case _ => OperationEvent.Uncertain(at, s"restored event $eventType")
+
+  private def snapshotValue(value: collection.Map[String, ujson.Value]): SnapshotRef =
+    val snapshot = value.get("snapshot").map(_.obj).getOrElse(Map.empty[String, ujson.Value])
+    val resource = resourceRef(snapshot.getOrElse("resource", throw IllegalArgumentException("snapshot.resource is required"))).fold(error => throw IllegalArgumentException(error), identity)
+    SnapshotRef(resource, string(snapshot, "state").getOrElse("UNKNOWN"), string(snapshot, "path").flatMap(SnapshotPath.from(_).toOption))
+
+  private def actualProtection(value: String): Either[String, ActualProtection] =
+    if value == "EmptyState" then Right(ActualProtection.EmptyState)
+    else if value == "LastState" then Right(ActualProtection.LastState)
+    else if value.startsWith("Savepoint(") && value.endsWith(")") then SnapshotPath.from(value.stripPrefix("Savepoint(").stripSuffix(")")).map(ActualProtection.Savepoint.apply)
+    else Left(s"unknown actual protection: $value")
 
   private def parseInstant(value: String): Either[String, Instant] = scala.util.Try(Instant.parse(value)).toEither.left.map(_.getMessage)
   private def string(value: collection.Map[String, ujson.Value], key: String): Option[String] = value.get(key).flatMap(item => item.strOpt.orElse(item.numOpt.map(_.toString))).filter(_.nonEmpty)
