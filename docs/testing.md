@@ -16,6 +16,8 @@ mvn -B -f job/pom.xml package -DskipTests
 本轮实际结果：`sbt -batch test` 通过 99 个测试；`sbt -batch assembly` 成功生成 assembly；`mvn -B -f job/pom.xml package -DskipTests` 返回 `BUILD SUCCESS`；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile 和两副本统一 operation 状态已经有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。真实 checkpoint/savepoint 写入 RustFS、恢复和跨节点故障演练仍需目标集群现场证据；锁租约接管与 `FallbackDetected` 的代码和回归测试已补齐。
+
+现场验收记录：目标集群的 StatefulCounterJob 已通过 RustFS checkpoint、FlinkStateSnapshot savepoint 和新 Deployment 的 `initialSavepointPath` 恢复；原任务保存前计数 `115921`，恢复任务日志达到 `116404`，JobManager 同时记录了 `Restoring job ... from Savepoint`。第一次冷启动操作在旧 30 秒窗口内超时，但 CR 随后进入 RUNNING；后续使用默认 180 秒窗口复验 operation。
 - 覆盖 CLI/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
 - Maven Job：应以本轮命令的 `BUILD SUCCESS` 为准。
 - `job/target/zio-flink-wordcount-0.1.0.jar` 同时包含 `StatefulCounterJob`；目标集群现场测试应使用 `examples/flinkdeployment-stateful.json`，确认 checkpoint 计数、savepoint `status.path` 和恢复后 `stateful-counter` 日志连续。

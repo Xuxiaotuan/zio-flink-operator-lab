@@ -32,6 +32,7 @@ final class DefaultAsyncOperationWorker(
     scheduler: Option[Queue[OperationId]] = None
 ) extends AsyncOperationWorker:
   private val controlPlane = new DefaultFlinkControlPlane(store)
+  private val verificationTimeout = sys.env.get("ZIO_FLINK_VERIFICATION_TIMEOUT_SECONDS").flatMap(_.toLongOption).filter(_ > 0).getOrElse(180L).seconds
 
   override def submit(requestId: RequestId, operation: FlinkOperation): IO[ControlPlaneError, AcceptedOperation] =
     for
@@ -153,7 +154,7 @@ final class DefaultAsyncOperationWorker(
         case Some(Left(error)) => ZIO.fail(error)
         case None => ZIO.fail(ControlPlaneError.VerificationFailed("verification stream completed before the submitted generation was observed"))
       }
-      .timeoutFail(ControlPlaneError.VerificationTimedOut("verification timed out while waiting for the submitted generation"))(30.seconds)
+      .timeoutFail(ControlPlaneError.VerificationTimedOut("verification timed out while waiting for the submitted generation"))(verificationTimeout)
 
   private def deterministicFailure(evidence: Evidence): Boolean =
     evidence.jobState == JobState.Failed || evidence.reconciliation == ReconciliationState.Error || evidence.snapshotState.exists { state =>
@@ -171,7 +172,7 @@ final class DefaultAsyncOperationWorker(
       .runHead
       .mapError(error => ControlPlaneError.VerificationFailed(Option(error.getMessage).getOrElse(error.toString)))
       .flatMap(value => ZIO.when(value.isEmpty)(ZIO.fail(ControlPlaneError.VerificationFailed("delete observation stream completed before the target was deleted"))))
-      .timeoutFail(ControlPlaneError.VerificationTimedOut("delete verification timed out"))(30.seconds)
+      .timeoutFail(ControlPlaneError.VerificationTimedOut("delete verification timed out"))(verificationTimeout)
       .unit
 
   private def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation] = store.transition(id, event)

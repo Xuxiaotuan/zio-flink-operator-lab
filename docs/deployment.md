@@ -60,6 +60,8 @@ curl -fsS 'http://<任一节点>:30882/v1/state?namespace=bigdata-lab'
 
 两个副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态和 operation 生命周期默认都来自 Kubernetes CR；每个副本都会轮询，因此状态轮询流量随副本数线性增加。`FlinkOperationLock` CR 按目标资源提供跨副本互斥。设置 `ZIO_FLINK_OPERATION_STORE=postgres` 后，只有 operation 审计切换到 PostgreSQL，Flink 资源状态仍来自 Kubernetes。
 
+Flink 冷启动和 TaskManager 调度可能超过短轮询窗口，worker 的提交、删除和验证超时由 `ZIO_FLINK_VERIFICATION_TIMEOUT_SECONDS` 控制，默认 180 秒；现场集群可以按镜像拉取和调度时延调整。
+
 ## RustFS
 
 savepoint 使用独立 bucket：
