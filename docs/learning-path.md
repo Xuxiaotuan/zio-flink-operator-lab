@@ -56,6 +56,6 @@ def execute(command: Command): ZIO[KubernetesApi, Throwable, Unit]
 - `FlinkOperation` 把 CLI、HTTP 和未来 UI 的操作统一成同一个领域命令。
 - `PolicyEngine` 把未验证操作转换成 `ValidatedOperation`。
 - `OperationStateMachine` 拒绝非法状态跳转，并保留 `Failed`、`TimedOut`、`Uncertain` 和 `Superseded`。
-- `OperationStore` 通过 ZIO `Ref` 保证单实例内的检查、转换和写入原子完成；分布式持久化和 Lease 锁放到后续阶段。
+- `OperationStore` 通过 ZIO `Ref` 保证单实例内的检查、转换和写入原子完成；生产多副本使用 Kubernetes `FlinkOperation` CR，裸机可切换 PostgreSQL，资源互斥使用带续租的 `FlinkOperationLock` CR。
 
 学习重点是：`ZIO[R, E, A]` 的 `E` 不再只写 `Throwable`，操作策略和状态机错误使用 `ControlPlaneError`；接受操作也不等于验证完成。

@@ -101,6 +101,26 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         applied <- records.get
       yield assertTrue(completed.state == OperationState.Completed, applied.exists(raw => raw.contains("\"upgradeMode\":\"savepoint\"") && raw.contains("kubernetes.operator.job.upgrade.last-state-fallback.enabled")))
     },
+    test("records fallback detected when the operator explicitly reconciles last-state") {
+      for
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"11","generation":2}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(2), Some(2), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"11","uid":"uid","generation":2},"spec":{"flinkConfiguration":{"state.savepoints.dir":"s3://savepoints/orders"}},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED","lastReconciledSpec":"{\"spec\":{\"job\":{\"upgradeMode\":\"last-state\"}}}"},"observedGeneration":2}}"""))
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
+        spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.Savepoint), savepointDirectory = Some("s3://savepoints/orders"))
+        operation = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, name), spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.AllowLastState))
+        accepted <- worker.submit(RequestId.from("req-fallback").toOption.get, operation)
+        completed <- worker.process(accepted.operationId)
+      yield assertTrue(completed.state == OperationState.Completed, completed.events.exists(_.isInstanceOf[OperationEvent.FallbackDetected]))
+    },
     test("resumes a verifying operation from its persisted event chain") {
       for
         api <- ZIO.succeed(new KubernetesApi:
@@ -123,5 +143,30 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         _ <- store.transition(accepted.operationId, OperationEvent.VerificationStarted(Instant.now()))
         completed <- worker.process(accepted.operationId)
       yield assertTrue(completed.state == OperationState.Completed, completed.events.exists(_.isInstanceOf[OperationEvent.VerificationSucceeded]))
+    },
+    test("records fallback after recovering an upgrade verification") {
+      for
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException("must not resubmit"))
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(2), Some(2), """{"kind":"FlinkDeployment","metadata":{"name":"orders","generation":2},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED","lastReconciledSpec":"{\"spec\":{\"job\":{\"upgradeMode\":\"last-state\"}}}"},"observedGeneration":2}}"""))
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex)
+        spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.Savepoint))
+        upgrade = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, name), spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.AllowLastState))
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-recovered-fallback").toOption.get, upgrade)
+        _ <- store.transition(accepted.operationId, OperationEvent.ValidationStarted(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.ValidationPassed(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(2).toOption, ResourceVersion.from("11").toOption))
+        _ <- store.transition(accepted.operationId, OperationEvent.WaitingForObservation(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.VerificationStarted(Instant.now()))
+        completed <- worker.process(accepted.operationId)
+      yield assertTrue(completed.state == OperationState.Completed, completed.events.count(_.isInstanceOf[OperationEvent.FallbackDetected]) == 1)
     }
   )

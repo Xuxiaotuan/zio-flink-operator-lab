@@ -16,12 +16,18 @@ object InMemoryResourceCoordinator extends ResourceCoordinator:
 
 final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCoordinator:
   private val leaseDuration = Duration.ofSeconds(sys.env.get("ZIO_FLINK_LOCK_LEASE_SECONDS").flatMap(_.toLongOption).getOrElse(120L).max(1L))
+  private val renewInterval = Duration.ofMillis((leaseDuration.toMillis / 3L).max(1000L))
 
   override def withLock[A](resource: ResourceRef, operationId: OperationId)(effect: IO[ControlPlaneError, A]): IO[ControlPlaneError, A] =
     val lockName = lockNameFor(resource)
-    acquire(resource, operationId, lockName).flatMap(lock => effect.ensuring(release(resource.namespace, lockName, lock.uid)))
+    acquire(resource, operationId, lockName).flatMap { lock =>
+      for
+        current <- Ref.make(lock)
+        result <- renew(resource.namespace, lockName, current).forever.raceFirst(effect).ensuring(release(resource.namespace, lockName, lock.uid))
+      yield result
+    }
 
-  private final case class LockLease(uid: Option[ResourceUid])
+  private final case class LockLease(uid: Option[ResourceUid], resourceVersion: Option[String])
   private final case class ExistingLock(uid: Option[ResourceUid], expiresAt: Instant)
 
   private def acquire(resource: ResourceRef, operationId: OperationId, lockName: DeploymentName): IO[ControlPlaneError, LockLease] =
@@ -50,7 +56,21 @@ final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCo
   private def createLock(resource: ResourceRef, operationId: OperationId, lockName: DeploymentName): IO[Throwable, LockLease] =
     val leaseUntil = Instant.now().plus(leaseDuration)
     api.create(resource.namespace, render(resource, operationId, lockName, leaseUntil))
-      .map(raw => LockLease(metadataUid(raw)))
+      .map(raw => LockLease(metadataUid(raw), metadataResourceVersion(raw)))
+
+  private def renew(namespace: Namespace, lockName: DeploymentName, current: Ref[LockLease]): IO[ControlPlaneError, Unit] =
+    (ZIO.sleep(zio.Duration.fromMillis(renewInterval.toMillis)) *>
+      current.get.flatMap { lease =>
+        api.patch(namespace, ResourceKind.OperationLock, lockName.nameValue, renderRenewal(lease, Instant.now().plus(leaseDuration)))
+          .mapError(toStoreFailure)
+          .flatMap(raw => current.update(currentLease => currentLease.copy(resourceVersion = metadataResourceVersion(raw).orElse(currentLease.resourceVersion))))
+      })
+
+  private def renderRenewal(lease: LockLease, leaseUntil: Instant): String =
+    val metadata = ujson.Obj()
+    lease.uid.foreach(value => metadata("uid") = value.resourceUidValue)
+    lease.resourceVersion.foreach(value => metadata("resourceVersion") = value)
+    ujson.Obj("metadata" -> metadata, "spec" -> ujson.Obj("leaseUntil" -> leaseUntil.toString)).render()
 
   private def release(namespace: Namespace, lockName: DeploymentName, uid: Option[ResourceUid]): UIO[Unit] =
     api.delete(namespace, ResourceKind.OperationLock, lockName.nameValue, uid).ignore
@@ -86,6 +106,11 @@ final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCo
       .flatMap(_.obj.get("metadata").flatMap(_.objOpt))
       .flatMap(_.get("uid")).flatMap(_.strOpt)
       .flatMap(ResourceUid.from(_).toOption)
+
+  private def metadataResourceVersion(raw: String): Option[String] =
+    scala.util.Try(ujson.read(raw)).toOption
+      .flatMap(_.obj.get("metadata").flatMap(_.objOpt))
+      .flatMap(_.get("resourceVersion")).flatMap(_.strOpt)
 
   private def toStoreFailure(error: Any): ControlPlaneError =
     error match

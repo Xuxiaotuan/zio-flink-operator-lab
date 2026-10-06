@@ -32,6 +32,42 @@ object ResourceCoordinatorSpec extends ZIOSpecDefault:
         observed <- calls.get
       yield assertTrue(result == "ok", observed == Vector("create", "get", "delete:old-lock", "create", "delete:new-lock"))
     },
+    test("renews a held lease with UID and resourceVersion preconditions") {
+      for
+        patches <- Ref.make(Vector.empty[String])
+        entered <- Promise.make[Nothing, Unit]
+        finished <- Promise.make[Nothing, String]
+        api = new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException())
+          override def create(namespace: Namespace, resource: String) = ZIO.succeed("""{"metadata":{"uid":"held-lock","resourceVersion":"7"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("""{"metadata":{"uid":"held-lock","resourceVersion":"7"}}""")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("deleted")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = patches.update(_ :+ patch).as("renewed")
+        fiber <- new KubernetesResourceCoordinator(api).withLock(target, OperationId.from("renew-operation").toOption.get)(entered.succeed(()) *> finished.await).fork
+        _ <- entered.await
+        _ <- TestClock.adjust(40.seconds)
+        observed <- patches.get
+        _ <- finished.succeed("ok")
+        result <- fiber.join
+      yield assertTrue(result == "ok", observed.exists(raw => raw.contains("\"uid\":\"held-lock\"") && raw.contains("\"resourceVersion\":\"7\"") && raw.contains("leaseUntil")))
+    },
+    test("interrupts the effect when ownership is lost during lease renewal") {
+      for
+        entered <- Promise.make[Nothing, Unit]
+        finished <- Promise.make[Nothing, String]
+        api = new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException())
+          override def create(namespace: Namespace, resource: String) = ZIO.succeed("""{"metadata":{"uid":"old-lock","resourceVersion":"7"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("""{"metadata":{"uid":"replacement-lock","resourceVersion":"8"}}""")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("deleted")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.fail(KubernetesApiError(409, "lock ownership changed"))
+        fiber <- new KubernetesResourceCoordinator(api).withLock(target, OperationId.from("lost-operation").toOption.get)(entered.succeed(()) *> finished.await).either.fork
+        _ <- entered.await
+        _ <- TestClock.adjust(40.seconds)
+        _ <- finished.succeed("ok")
+        result <- fiber.join
+      yield assertTrue(result.isLeft)
+    },
     test("rejects a live lock without deleting it") {
       for
         calls <- Ref.make(Vector.empty[String])

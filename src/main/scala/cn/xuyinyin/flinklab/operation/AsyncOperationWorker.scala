@@ -73,6 +73,7 @@ final class DefaultAsyncOperationWorker(
       expectedGeneration = current.events.collect { case OperationEvent.Submitted(_, generation, _, _) => generation }.lastOption.flatten
       evidence <- awaitVerification(current.command, target, expectedGeneration)
       _ <- transition(id, OperationEvent.Observed(Instant.now(), evidence.observedGeneration))
+      _ <- recordFallback(id, current, evidence)
       result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now(), Some(evidence.audit("recovered verification"))))
     yield result
 
