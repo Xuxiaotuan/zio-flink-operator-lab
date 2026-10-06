@@ -86,5 +86,6 @@ object DefaultVerificationEngine extends VerificationEngine:
           else Left(ControlPlaneError.VerificationFailed("snapshot has not completed"))
         case FlinkOperation.Delete(_, _) => Right(VerificationResult(evidence, "delete acknowledged"))
         case _ =>
-          if evidence.jobState == JobState.Running && evidence.reconciliation == ReconciliationState.Ready then Right(VerificationResult(evidence, "job is running and reconciled"))
-          else Left(ControlPlaneError.VerificationFailed(s"expected RUNNING/READY, observed ${evidence.jobState}/${evidence.reconciliation}"))
+          if (evidence.jobState == JobState.Running || evidence.jobState == JobState.Finished) && evidence.reconciliation == ReconciliationState.Ready then
+            Right(VerificationResult(evidence, s"job is ${evidence.jobState} and reconciled"))
+          else Left(ControlPlaneError.VerificationFailed(s"expected RUNNING or FINISHED with READY reconciliation, observed ${evidence.jobState}/${evidence.reconciliation}"))
