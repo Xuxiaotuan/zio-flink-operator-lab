@@ -76,6 +76,6 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         accepted <- worker.submit(RequestId.from("req-abandoned").toOption.get, operation)
         _ <- worker.process(accepted.operationId).either
         stored <- store.get(accepted.operationId)
-      yield assertTrue(stored.exists(_.state == OperationState.Failed), stored.exists(_.events.exists(_.isInstanceOf[OperationEvent.Failed])))
+      yield assertTrue(stored.exists(_.state == OperationState.Failed), stored.exists(_.events.exists(_.toString.contains("job is not running"))))
     }
   )

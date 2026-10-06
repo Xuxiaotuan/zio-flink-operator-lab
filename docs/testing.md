@@ -32,14 +32,14 @@ mvn -B -f job/pom.xml package -DskipTests
 
 ### 最新现场验收（2026-10-06）
 
-- PipelineRun `zio-flink-operator-lab-zt49r`（Jenkins build `#19`）成功：提交 `cad1a35` 的测试、assembly、镜像推送和目标 Deployment rollout 均通过。最终镜像为 `build-19-cad1a359328e`。
+- PipelineRun `zio-flink-operator-lab-7nsh7`（Jenkins build `#21`）成功：提交 `51657c3` 的测试、assembly、镜像推送和目标 Deployment rollout 均通过。最终镜像为 `build-21-51657c3df32f`。
 - Deployment 为 `2/2`，两个 Pod 分别运行在 `xxt` 和 `xjw`；两个 NodePort 地址的 `/healthz` 均返回 `{"status":"ok"}`。
 - 请求 `smoke-20261006-5` 的 operation `c3f6530c-9777-43b4-bbb5-8b35a831cc9a` 在两个节点返回完全相同的 `COMPLETED` 事件链：`SUBMITTED → WAITING_FOR_OBSERVATION → OBSERVED → VERIFICATION_SUCCEEDED`。
 - 对应 `FlinkDeployment/zio-control-plane-smoke-5` 状态为 `READY/FINISHED/DEPLOYED`。这证明了 HTTP 提交、Operation CR、resourceVersion/watch 观察、Operator reconcile、自然结束任务判定和两副本统一读取状态。
 
-这组证据不包含 checkpoint/savepoint 的成功路径。`FlinkStateSnapshot` API 和状态投影已经实现，但 RustFS endpoint、S3 插件、Secret、真实快照路径和恢复连续性仍需单独验收。
+这组证据不包含 checkpoint/savepoint 的成功路径。`FlinkStateSnapshot` API 和状态投影已经实现；对已结束 Job 的 savepoint 请求已现场验证为两个节点一致的 `FAILED`，Operator 原因是 `ABANDONED`（目标 Job 不在运行）。RustFS endpoint、S3 插件、Secret、运行中 Job 的真实快照路径和恢复连续性仍需单独验收，属于 `evidence_incomplete`。
 
-此前 build `#11` 的 Source 阶段曾因 GitHub 连接重置而 `external_blocked`；后续 PipelineRun `#19` 已成功，因此当前提交已有完整 CI/CD 证据。历史失败仍保留用于说明重试配置的背景。
+此前 build `#11` 的 Source 阶段曾因 GitHub 连接重置而 `external_blocked`；后续 PipelineRun `#21` 已成功，因此当前提交已有完整 CI/CD 证据。历史失败仍保留用于说明重试配置的背景。
 
 ## 测试覆盖
 

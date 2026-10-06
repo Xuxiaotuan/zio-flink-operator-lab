@@ -19,7 +19,9 @@ final case class Evidence(
     snapshotState: Option[String],
     snapshotPath: Option[SnapshotPath],
     capturedAt: Instant,
-    raw: String
+    raw: String,
+    snapshotError: Option[String] = None,
+    snapshotFailures: Option[String] = None
 )
 
 object Evidence:
@@ -31,7 +33,7 @@ object Evidence:
     observation.kind match
       case ResourceKind.StateSnapshot =>
         val snapshot = FlinkStateSnapshotStatus.fromJsonString(observation.payload).toOption
-        Evidence(resource, rv, resource.uid, generation, observedGeneration, ReconciliationState.Unknown, JobState.Unknown, snapshot.flatMap(_.state), snapshot.flatMap(_.path.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload)
+        Evidence(resource, rv, resource.uid, generation, observedGeneration, ReconciliationState.Unknown, JobState.Unknown, snapshot.flatMap(_.state), snapshot.flatMap(_.path.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload, snapshot.flatMap(_.error), snapshot.flatMap(_.failures))
       case _ =>
         val status = FlinkStatusSnapshot.fromJsonString(observation.payload).toOption
         Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload)
@@ -83,7 +85,9 @@ object DefaultVerificationEngine extends VerificationEngine:
           else Left(ControlPlaneError.VerificationFailed(s"expected SUSPENDED, observed ${evidence.jobState}"))
         case FlinkOperation.Snapshot(_, _) =>
           if evidence.snapshotState.exists(_.equalsIgnoreCase("COMPLETED")) then Right(VerificationResult(evidence, "snapshot completed"))
-          else Left(ControlPlaneError.VerificationFailed("snapshot has not completed"))
+          else
+            val reason = evidence.snapshotError.orElse(evidence.snapshotFailures).getOrElse("snapshot has not completed")
+            Left(ControlPlaneError.VerificationFailed(reason))
         case FlinkOperation.Delete(_, _) => Right(VerificationResult(evidence, "delete acknowledged"))
         case _ =>
           if (evidence.jobState == JobState.Running || evidence.jobState == JobState.Finished) && evidence.reconciliation == ReconciliationState.Ready then
