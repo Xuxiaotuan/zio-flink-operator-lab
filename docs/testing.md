@@ -17,7 +17,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复和单副本故障演练已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。锁租约接管已具备代码和回归测试，仍需单独的 Kubernetes Lock CR 现场演练记录。
 
-现场验收记录：目标集群 PipelineRun #27（`zio-flink-operator-lab-wjclx`）成功，控制面运行 `build-27-0561654c8687`。StatefulCounterJob 已通过 RustFS checkpoint、FlinkStateSnapshot savepoint 和新 Deployment 的 `initialSavepointPath` 恢复；checkpoint REST 记录多次 `COMPLETED`，savepoint `s3://flink-savepoints/zio-e2e/savepoints/savepoint-26cb8d-c93fc0e044c9` 的 RustFS `_metadata` HEAD 返回 200。原任务挂起前计数 `115921`，恢复任务日志达到 `116404`，JobManager 同时记录了 `Restoring job ... from Savepoint`。使用默认 180 秒窗口复验的 `zio-e2e-restore3` operation 进入 `COMPLETED`，观察到 `RUNNING/DEPLOYED`。
+现场验收记录：StatefulCounterJob 的现场验收使用 PipelineRun #27（`zio-flink-operator-lab-wjclx`）构建的 Stateful Job 镜像，已通过 RustFS checkpoint、FlinkStateSnapshot savepoint 和新 Deployment 的 `initialSavepointPath` 恢复；checkpoint REST 记录多次 `COMPLETED`，savepoint `s3://flink-savepoints/zio-e2e/savepoints/savepoint-26cb8d-c93fc0e044c9` 的 RustFS `_metadata` HEAD 返回 200。原任务挂起前计数 `115921`，恢复任务日志达到 `116404`，JobManager 同时记录了 `Restoring job ... from Savepoint`。使用默认 180 秒窗口复验的 `zio-e2e-restore3` operation 进入 `COMPLETED`，观察到 `RUNNING/DEPLOYED`。
 
 现场故障演练：删除 xjw 节点上的一个控制面 Pod 后，xxt 节点副本持续返回 `{"status":"ok"}`，Deployment 自动补回 xjw 副本并恢复 `2/2`；Flink 作业和 Kubernetes CR 未受影响。
 - 覆盖 CLI/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段、回退审计、锁租约续期与接管、重试策略。
@@ -40,6 +40,7 @@ mvn -B -f job/pom.xml package -DskipTests
 ### 最新现场验收（2026-10-07）
 
 - PipelineRun `zio-flink-operator-lab-wjclx`（Jenkins build `#27`）成功：提交 `0561654` 的测试、assembly、控制面镜像和 Stateful Job 镜像均完成，目标 Deployment rollout 到 `build-27-0561654c8687`。
+- PipelineRun `zio-flink-operator-lab-wh67d`（Jenkins build `#28`）成功：提交 `0e72734` 的 108 个测试、assembly、控制面镜像和 Stateful Job 镜像均完成，目标 Deployment rollout 到 `build-28-0e72734e935c`；两副本分别位于 xxt、xjw。
 
 - PipelineRun `zio-flink-operator-lab-582f4`（Jenkins build `#24`）成功：包含 StatefulCounterJob 的 Maven 打包、带 S3 插件的 Flink Job 镜像构建/推送，以及控制面 Deployment rollout。控制面镜像为 `build-24-ba815f757367`，测试 Job 镜像为 `100.97.53.78:5001/xxt/zio-flink-stateful-job:build-24-ba815f757367`。
 - PipelineRun `zio-flink-operator-lab-96csb`（Jenkins build `#23`）成功：提交 `7e0a00b` 的测试、assembly、镜像推送和目标 Deployment rollout 均通过。最终镜像为 `build-23-7e0a00bfa84d`。
