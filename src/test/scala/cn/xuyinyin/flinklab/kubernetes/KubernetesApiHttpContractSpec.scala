@@ -2,6 +2,7 @@ package cn.xuyinyin.flinklab.kubernetes
 
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
+import cn.xuyinyin.flinklab.domain.ResourceUid
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 import io.kubernetes.client.util.ClientBuilder
 import io.kubernetes.client.util.credentials.AccessTokenAuthentication
@@ -87,6 +88,15 @@ object KubernetesApiHttpContractSpec extends ZIOSpecDefault:
           requests.size == 1,
           requests.headOption.exists(request => request.method == "GET" && request.path == "/apis/flink.apache.org/v1beta1/namespaces/analytics/flinkstatesnapshots")
         )
+      },
+      test("delete carries a UID precondition when one is supplied") {
+        for
+          state <- ZIO.succeed(new FakeServerState)
+          server <- ZIO.acquireRelease(ZIO.attempt(startServer(state)))(server => ZIO.succeed(server.stop(0)))
+          api = client(server)
+          _ <- api.delete(Namespace.unsafe("analytics"), ResourceKind.Deployment, "orders", ResourceUid.from("uid-1").toOption)
+          requests <- ZIO.succeed(state.requests.asScala.toList)
+        yield assertTrue(requests.headOption.exists(request => request.method == "DELETE" && request.body.contains("\"uid\":\"uid-1\"")))
       },
       test("does not retry a forbidden response") {
         for

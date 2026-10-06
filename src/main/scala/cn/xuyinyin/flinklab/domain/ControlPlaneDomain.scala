@@ -20,6 +20,7 @@ object OperationId:
   def from(value: String): Either[String, OperationId] =
     if value.trim.nonEmpty then Right(value.trim) else Left("operation id must not be empty")
   def generate(): OperationId = UUID.randomUUID().toString
+  def forRequest(requestId: RequestId): OperationId = UUID.nameUUIDFromBytes(requestId.requestIdValue.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString
 extension (value: OperationId)
   def operationIdValue: String = value
 
@@ -73,6 +74,11 @@ enum DesiredJobState:
   case Running, Suspended
 
 object DesiredJobState:
+  def parse(value: String): Either[String, DesiredJobState] = value.trim.toLowerCase match
+    case "running" => Right(Running)
+    case "suspended" => Right(Suspended)
+    case other => Left(s"unknown desired job state: $other (use running or suspended)")
+
   extension (value: DesiredJobState)
     def operatorValue: String = value match
       case DesiredJobState.Running   => "running"
@@ -118,7 +124,8 @@ final case class ObservedJobState(
     reconciliation: ReconciliationState,
     generation: Option[Generation],
     observedGeneration: Option[Generation],
-    savepointDirectory: Option[SnapshotPath]
+    savepointDirectory: Option[SnapshotPath],
+    lastSavepointPath: Option[SnapshotPath] = None
 )
 
 enum DeletePolicy:
@@ -166,11 +173,34 @@ final case class SnapshotRef(
     path.foreach(current => value("path") = current.snapshotPathValue)
     value
 
+final case class VerificationEvidence(
+    resource: ResourceRef,
+    resourceVersion: Option[ResourceVersion],
+    uid: Option[ResourceUid],
+    generation: Option[Generation],
+    observedGeneration: Option[Generation],
+    snapshotState: Option[String],
+    snapshotPath: Option[SnapshotPath],
+    reason: String
+):
+  def json: ujson.Obj =
+    val value = ujson.Obj(
+      "resource" -> resource.json,
+      "reason" -> reason
+    )
+    resourceVersion.foreach(current => value("resourceVersion") = current.resourceVersionValue)
+    uid.foreach(current => value("uid") = current.resourceUidValue)
+    generation.foreach(current => value("generation") = current.generationValue)
+    observedGeneration.foreach(current => value("observedGeneration") = current.generationValue)
+    snapshotState.foreach(current => value("snapshotState") = current)
+    snapshotPath.foreach(current => value("snapshotPath") = current.snapshotPathValue)
+    value
+
 enum OperationEvent:
   case Accepted(at: Instant)
   case ValidationStarted(at: Instant)
   case ValidationPassed(at: Instant)
-  case Submitted(at: Instant, generation: Option[Generation], resourceVersion: Option[ResourceVersion])
+  case Submitted(at: Instant, generation: Option[Generation], resourceVersion: Option[ResourceVersion], uid: Option[ResourceUid] = None)
   case WaitingForObservation(at: Instant)
   case Observed(at: Instant, observedGeneration: Option[Generation])
   case ReconciliationStarted(at: Instant)
@@ -178,7 +208,7 @@ enum OperationEvent:
   case SnapshotCompleted(at: Instant, snapshot: SnapshotRef)
   case FallbackDetected(at: Instant, requested: StateProtection, actual: ActualProtection)
   case VerificationStarted(at: Instant)
-  case VerificationSucceeded(at: Instant)
+  case VerificationSucceeded(at: Instant, evidence: Option[VerificationEvidence] = None)
   case Failed(at: Instant, reason: String)
   case TimedOut(at: Instant, reason: String)
   case Superseded(at: Instant, replacedBy: OperationId)
@@ -189,7 +219,7 @@ object OperationEvent:
     case Accepted(value)                       => value
     case ValidationStarted(value)              => value
     case ValidationPassed(value)               => value
-    case Submitted(value, _, _)                => value
+    case Submitted(value, _, _, _)             => value
     case WaitingForObservation(value)          => value
     case Observed(value, _)                    => value
     case ReconciliationStarted(value)          => value
@@ -197,7 +227,7 @@ object OperationEvent:
     case SnapshotCompleted(value, _)           => value
     case FallbackDetected(value, _, _)         => value
     case VerificationStarted(value)            => value
-    case VerificationSucceeded(value)          => value
+    case VerificationSucceeded(value, _)       => value
     case Failed(value, _)                      => value
     case TimedOut(value, _)                    => value
     case Superseded(value, _)                  => value
@@ -207,13 +237,15 @@ object OperationEvent:
     case Accepted(at) => ujson.Obj("type" -> "ACCEPTED", "at" -> at.toString)
     case ValidationStarted(at) => ujson.Obj("type" -> "VALIDATION_STARTED", "at" -> at.toString)
     case ValidationPassed(at) => ujson.Obj("type" -> "VALIDATION_PASSED", "at" -> at.toString)
-    case Submitted(at, generation, resourceVersion) =>
-      ujson.Obj(
+    case Submitted(at, generation, resourceVersion, uid) =>
+      val value = ujson.Obj(
         "type" -> "SUBMITTED",
         "at" -> at.toString,
         "generation" -> generation.map(_.generationValue).getOrElse(0L),
         "resourceVersion" -> resourceVersion.map(_.resourceVersionValue).getOrElse("")
       )
+      uid.foreach(current => value("uid") = current.resourceUidValue)
+      value
     case WaitingForObservation(at) => ujson.Obj("type" -> "WAITING_FOR_OBSERVATION", "at" -> at.toString)
     case Observed(at, observedGeneration) =>
       ujson.Obj("type" -> "OBSERVED", "at" -> at.toString, "observedGeneration" -> observedGeneration.map(_.generationValue).getOrElse(0L))
@@ -223,7 +255,10 @@ object OperationEvent:
     case FallbackDetected(at, requested, actual) =>
       ujson.Obj("type" -> "FALLBACK_DETECTED", "at" -> at.toString, "requestedProtection" -> requested.toString, "actualProtection" -> actual.toString)
     case VerificationStarted(at) => ujson.Obj("type" -> "VERIFICATION_STARTED", "at" -> at.toString)
-    case VerificationSucceeded(at) => ujson.Obj("type" -> "VERIFICATION_SUCCEEDED", "at" -> at.toString)
+    case VerificationSucceeded(at, evidence) =>
+      val value = ujson.Obj("type" -> "VERIFICATION_SUCCEEDED", "at" -> at.toString)
+      evidence.foreach(current => value("evidence") = current.json)
+      value
     case Failed(at, reason) => ujson.Obj("type" -> "FAILED", "at" -> at.toString, "reason" -> reason)
     case TimedOut(at, reason) => ujson.Obj("type" -> "TIMED_OUT", "at" -> at.toString, "reason" -> reason)
     case Superseded(at, replacedBy) => ujson.Obj("type" -> "SUPERSEDED", "at" -> at.toString, "replacedBy" -> replacedBy.operationIdValue)
@@ -286,7 +321,7 @@ final case class Operation(
 
 object Operation:
   def accepted(requestId: RequestId, command: FlinkOperation, resource: ResourceRef, at: Instant): Operation =
-    val id = OperationId.generate()
+    val id = OperationId.forRequest(requestId)
     Operation(id, requestId, command, resource, OperationState.Accepted, List(OperationEvent.Accepted(at)), at, at)
 
 object OperationStateMachine:
@@ -299,7 +334,7 @@ object OperationStateMachine:
       case OperationEvent.ValidationPassed(_)          => state match
         case OperationState.Validating => Some(OperationState.Validating)
         case _ => None
-      case OperationEvent.Submitted(_, _, _)           => state match
+      case OperationEvent.Submitted(_, _, _, _)        => state match
         case OperationState.Validating => Some(OperationState.Submitted)
         case _ => None
       case OperationEvent.WaitingForObservation(_)     => state match
@@ -325,7 +360,7 @@ object OperationStateMachine:
       case OperationEvent.VerificationStarted(_)       => state match
         case OperationState.WaitingForObservation | OperationState.Reconciling | OperationState.Verifying => Some(OperationState.Verifying)
         case _ => None
-      case OperationEvent.VerificationSucceeded(_)     => state match
+      case OperationEvent.VerificationSucceeded(_, _)  => state match
         case OperationState.Verifying => Some(OperationState.Completed)
         case _ => None
       case OperationEvent.Failed(_, _)                 => terminalTransition(state, OperationState.Failed)

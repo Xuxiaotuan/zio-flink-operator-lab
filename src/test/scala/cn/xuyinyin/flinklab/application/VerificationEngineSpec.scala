@@ -38,5 +38,11 @@ object VerificationEngineSpec extends ZIOSpecDefault:
       val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("10"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"10","uid":"uid","generation":3},"status":{"lifecycleState":"FAILED","error":"operator rejected the resource","reconciliationStatus":{"state":"UPGRADING"},"observedGeneration":3}}""")
       val evidence = Evidence.fromObservation(namespace, observation)
       assertTrue(evidence.reconciliation == ReconciliationState.Error, DefaultVerificationEngine.verify(operation, ref, evidence).isLeft)
+    },
+    test("requires a completed snapshot to expose its result path") {
+      val snapshotName = DeploymentName.unsafe("orders-snapshot")
+      val operation = FlinkOperation.Snapshot(ref, SnapshotPolicy(SnapshotType.Savepoint, Some(snapshotName)))
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.StateSnapshot, snapshotName.nameValue, Some("9"), Some("snapshot-uid"), None, None, """{"kind":"FlinkStateSnapshot","metadata":{"name":"orders-snapshot","uid":"snapshot-uid","resourceVersion":"9"},"status":{"state":"COMPLETED"}}""")
+      assertTrue(DefaultVerificationEngine.verify(operation, ResourceRef(namespace, ResourceKind.StateSnapshot, snapshotName, ResourceUid.from("snapshot-uid").toOption), Evidence.fromObservation(namespace, observation)).isLeft)
     }
   )

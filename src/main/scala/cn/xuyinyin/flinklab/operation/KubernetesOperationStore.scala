@@ -15,10 +15,15 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
 
   override def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation] =
     for
-      current <- get(id).flatMap(ZIO.fromOption(_).orElseFail(ControlPlaneError.OperationNotFound(id)))
+      namespace <- ZIO.succeed(Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity))
+      raw <- api.get(namespace, ResourceKind.Operation, id.operationIdValue).mapError {
+        case KubernetesApiError(404, _) => ControlPlaneError.OperationNotFound(id)
+        case error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
+      }
+      current <- ZIO.fromEither(KubernetesOperationResource.parse(raw).map(Some(_))).mapError(error => ControlPlaneError.StoreFailure(error)).flatMap(ZIO.fromOption(_).orElseFail(ControlPlaneError.OperationNotFound(id)))
       next <- ZIO.fromEither(current.advance(event))
-      _ <- api.patch(next.resource.namespace, ResourceKind.Operation, id.operationIdValue, KubernetesOperationResource.render(next))
-        .mapError(error => transitionError(id, error))
+      patch = KubernetesOperationResource.render(next, KubernetesOperationResource.resourceVersion(raw))
+      _ <- api.patch(next.resource.namespace, ResourceKind.Operation, id.operationIdValue, patch).mapError(error => transitionError(id, error))
     yield next
 
   override def get(id: OperationId): IO[ControlPlaneError, Option[Operation]] =
@@ -52,18 +57,22 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
     ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
 
 object KubernetesOperationResource:
-  def render(operation: Operation): String =
+  def render(operation: Operation, resourceVersion: Option[String] = None): String =
     val metadata = ujson.Obj(
       "name" -> operation.id.operationIdValue,
       "namespace" -> operation.resource.namespace.namespaceValue,
       "labels" -> ujson.Obj("xxt.io/request-id" -> operation.requestId.requestIdValue)
     )
+    resourceVersion.foreach(value => metadata("resourceVersion") = value)
     ujson.Obj(
       "apiVersion" -> "flink.apache.org/v1beta1",
       "kind" -> "FlinkOperation",
       "metadata" -> metadata,
       "spec" -> ujson.Obj("operation" -> ujson.read(OperationCodec.json(operation)))
     ).render()
+
+  def resourceVersion(raw: String): Option[String] =
+    scala.util.Try(ujson.read(raw)).toOption.flatMap(_.obj.get("metadata").flatMap(_.objOpt).flatMap(_.get("resourceVersion")).flatMap(_.strOpt))
 
   def parse(raw: String): Either[String, Operation] =
     try

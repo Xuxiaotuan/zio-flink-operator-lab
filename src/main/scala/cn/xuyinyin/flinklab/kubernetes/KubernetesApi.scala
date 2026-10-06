@@ -2,6 +2,7 @@ package cn.xuyinyin.flinklab.kubernetes
 
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
+import cn.xuyinyin.flinklab.domain.{ResourceUid, resourceUidValue}
 import cn.xuyinyin.flinklab.operator.watch.{WatchEvent, WatchEventType}
 import com.google.gson.reflect.TypeToken
 import io.kubernetes.client.openapi.{ApiClient, JSON, Pair}
@@ -19,6 +20,7 @@ trait KubernetesApi:
     ZIO.fail(UnsupportedOperationException("list is not implemented by this KubernetesApi"))
   def get(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
   def delete(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
+  def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid]): IO[Throwable, String] = delete(namespace, kind, name)
   def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String): IO[Throwable, String]
   def watch(namespace: Namespace, kind: ResourceKind, name: String): ZStream[Any, Throwable, WatchEvent] =
     watchFrom(namespace, kind, Some(name), None)
@@ -84,6 +86,13 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
 
   override def delete(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String] =
     request("DELETE", resourcePath(namespace, apiResource(kind), name))
+
+  override def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid]): IO[Throwable, String] =
+    request(
+      method = "DELETE",
+      path = resourcePath(namespace, apiResource(kind), name),
+      body = uid.map(value => ujson.Obj("preconditions" -> ujson.Obj("uid" -> value.resourceUidValue)).render())
+    )
 
   override def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String): IO[Throwable, String] =
     request(

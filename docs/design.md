@@ -116,6 +116,6 @@ PostgreSQL 只保存状态观测和资源版本，不保存 Flink checkpoint/sav
 
 Kubernetes 模式不会额外引入 ConfigMap 缓存，避免 CR 与缓存出现双重事实源。裸机或外部审计场景可以显式配置 PostgreSQL；裸机 PostgreSQL 模式的 upsert 使用 Kubernetes `resourceVersion` 防止较旧观测覆盖较新观测。
 
-当前已完成目标集群 PipelineRun、Flink Operator reconcile、两副本调度和 Kubernetes CR 统一 operation 状态的现场验收。仍未完成的是 checkpoint/savepoint 成功写入 RustFS、从 savepoint 恢复后的业务连续性、跨节点故障演练，以及 FallbackDetected 的完整生产语义；Superseded 已有实现和单元测试，但还没有现场演练证据。单元测试、构建和 kustomize 渲染不能替代这些现场验收。
+当前已完成目标集群 PipelineRun、Flink Operator reconcile、两副本调度和 Kubernetes CR 统一 operation 状态的现场验收。HTTP dry-run、策略与最终 Flink 请求一致性、稳定 requestId、活动资源互斥、Operation CR resourceVersion 条件更新、worker 重启后的阶段恢复、快照 UID/结果路径校验、删除 UID 前置条件、watch 正常 EOF 重连以及验证 Evidence 审计已有代码和回归测试。仍未完成的是 checkpoint/savepoint 成功写入 RustFS、从 savepoint 恢复后的业务连续性、跨节点故障演练、锁租约接管，以及 FallbackDetected 的完整生产语义。单元测试、构建和 kustomize 渲染不能替代这些现场验收。
 
 本地 OrbStack 只有一个节点，两个 Pod 只能证明进程副本和 Service 路由。目标集群清单使用一个 NodePort Service、两个副本、hostname 反亲和和 `DoNotSchedule`；两台机器的跨节点调度需要目标集群可达、节点标签正常、Operator 已安装，并通过滚动重启和状态接口验证。每个副本都轮询同一 Kubernetes API，状态统一来自 CR；这会按副本数增加 list 请求量，后续高规模场景应增加 leader election 或集中式 watch。

@@ -49,12 +49,18 @@ object OperationStoreSpec extends ZIOSpecDefault:
           second <- controlPlane.accept(RequestId.from("req-idempotent").toOption.get, FlinkOperation.Resume(resource))
         yield assertTrue(first.operationId == second.operationId)
       },
-      test("supersedes an older active operation for the same resource") {
+      test("rejects a different active operation for the same resource") {
         for
           controlPlane <- ZIO.service[FlinkControlPlane]
           first <- controlPlane.accept(RequestId.from("req-old").toOption.get, FlinkOperation.Resume(resource))
-          second <- controlPlane.accept(RequestId.from("req-new").toOption.get, FlinkOperation.Restart(resource, UpgradePolicy(StateProtection.LastState, FallbackPolicy.Forbidden)))
-          old <- controlPlane.get(first.operationId)
-        yield assertTrue(second.operationId != first.operationId, old.exists(_.state == OperationState.Superseded))
+          second <- controlPlane.accept(RequestId.from("req-new").toOption.get, FlinkOperation.Restart(resource, UpgradePolicy(StateProtection.LastState, FallbackPolicy.Forbidden))).either
+        yield assertTrue(second.left.exists(_.isInstanceOf[ControlPlaneError.ResourceBusy]), first.operationId.operationIdValue.nonEmpty)
+      },
+      test("same request id with different operation is a conflict") {
+        for
+          controlPlane <- ZIO.service[FlinkControlPlane]
+          _ <- controlPlane.accept(RequestId.from("req-conflict").toOption.get, FlinkOperation.Resume(resource))
+          result <- controlPlane.accept(RequestId.from("req-conflict").toOption.get, FlinkOperation.Delete(resource, DeletePolicy.Graceful)).either
+        yield assertTrue(result.left.exists(_.message.contains("different operation")))
       }
     ).provide(InMemoryOperationStore.layer, FlinkControlPlane.live)

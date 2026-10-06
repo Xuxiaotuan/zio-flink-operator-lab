@@ -80,10 +80,16 @@ final class DefaultFlinkControlPlane(store: OperationStore) extends FlinkControl
       case FlinkOperation.Snapshot(target, _)   => target
       case FlinkOperation.Delete(target, _)     => target
     store.findByRequestId(requestId).flatMap {
-      case Some(existing) => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))
+      case Some(existing) if existing.command == operation => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))
+      case Some(_) => ZIO.fail(ControlPlaneError.InvalidPolicy("request id is already bound to a different operation"))
       case None =>
         val accepted = Operation.accepted(requestId, operation, resource, now)
-        store.create(accepted) *> store.supersedeActive(resource, accepted.id).as(AcceptedOperation(accepted.id, requestId, now)).catchSome {
+        store.list.flatMap { operations =>
+          val active = operations.find(existing => existing.resource == resource && !Set(OperationState.Completed, OperationState.Failed, OperationState.Superseded, OperationState.TimedOut, OperationState.Uncertain).contains(existing.state))
+          active match
+            case Some(existing) => ZIO.fail(ControlPlaneError.ResourceBusy(existing.resource))
+            case None => store.create(accepted).as(AcceptedOperation(accepted.id, requestId, now))
+        }.catchSome {
           case ControlPlaneError.OperationAlreadyExists(_) =>
             store.findByRequestId(requestId).flatMap {
               case Some(existing) => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))

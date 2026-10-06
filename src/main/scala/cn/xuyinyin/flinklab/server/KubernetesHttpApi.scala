@@ -50,6 +50,16 @@ object KubernetesHttpApi:
     routeWithWorker(request, settings, worker, Some(operationStore)).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
 
   private def routeWithWorker(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+    request.query.get("dryRun").map(_.trim.toLowerCase) match
+      case Some("true") =>
+        request.path.split('/').toList.filter(_.nonEmpty) match
+          case "v1" :: "deployments" :: Nil => applyDeployment(request, settings)
+          case "v1" :: "snapshots" :: Nil => createSnapshot(request, settings)
+          case _ => ZIO.fail(IllegalArgumentException("dryRun is only supported for deployment and snapshot apply requests"))
+      case Some("false") | None => routeWithWorkerMutation(request, settings, worker, operationStore)
+      case Some(value) => ZIO.fail(IllegalArgumentException(s"dryRun must be true or false, got: $value"))
+
+  private def routeWithWorkerMutation(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
       case ("POST", "v1" :: "deployments" :: Nil) =>
         for
@@ -89,7 +99,8 @@ object KubernetesHttpApi:
           spec <- specOperation match
             case FlinkOperation.Deploy(value) if value.name.nameValue == deploymentName => ZIO.succeed(value)
             case _ => ZIO.fail(IllegalArgumentException("upgrade body must describe the deployment named in the URL"))
-          policy <- policyFrom(request.query)
+          policy <- policyFrom(request.query, spec.job.stateProtection)
+          _ <- ZIO.fail(IllegalArgumentException("upgradeMode query must match job.upgradeMode")).unless(request.query.get("upgradeMode").orElse(request.query.get("upgrade-mode")).isEmpty || policy.protection == spec.job.stateProtection)
           operation = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), spec, policy)
           accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
         yield acceptedResponse(accepted, 202)
@@ -104,7 +115,7 @@ object KubernetesHttpApi:
         for
           namespace <- namespaceFrom(request.query, settings)
           deploymentName <- deploymentName(name)
-          policy <- policyFrom(request.query)
+          policy <- policyFrom(request.query, StateProtection.Stateless)
           operation = FlinkOperation.Restart(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), policy)
           accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
         yield acceptedResponse(accepted, 202)
@@ -374,9 +385,9 @@ object KubernetesHttpApi:
         .flatMap(raw => scala.util.Try(raw.toLong).toEither.left.map(_ => IllegalArgumentException("nonce must be a Long")))
     )
 
-  private def policyFrom(query: Map[String, String]): IO[Throwable, UpgradePolicy] =
+  private def policyFrom(query: Map[String, String], defaultProtection: StateProtection): IO[Throwable, UpgradePolicy] =
     for
-      protection <- ZIO.fromEither(StateProtection.parse(query.get("upgradeMode").orElse(query.get("upgrade-mode")).getOrElse("stateless")).left.map(IllegalArgumentException(_)))
+      protection <- ZIO.fromEither(StateProtection.parse(query.get("upgradeMode").orElse(query.get("upgrade-mode")).getOrElse(defaultProtection.operatorValue)).left.map(IllegalArgumentException(_)))
       fallback <- ZIO.fromEither(query.get("fallback").map(parseFallback).getOrElse(Right(FallbackPolicy.Forbidden)).left.map(IllegalArgumentException(_)))
       policy = UpgradePolicy(protection, fallback)
       _ <- ZIO.fromEither(policy.validate.left.map(error => IllegalArgumentException(error.message)))

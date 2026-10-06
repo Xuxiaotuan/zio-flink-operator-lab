@@ -9,16 +9,26 @@ final case class FlinkJob(
     entryClass: String,
     parallelism: Int,
     stateProtection: StateProtection = StateProtection.Stateless,
-    desiredState: DesiredJobState = DesiredJobState.Running
+    desiredState: DesiredJobState = DesiredJobState.Running,
+    args: List[String] = Nil,
+    initialSavepointPath: Option[SnapshotPath] = None,
+    allowNonRestoredState: Option[Boolean] = None
 ):
   def json: Obj =
-    Obj(
+    val value = Obj(
       "jarURI" -> jarUri.uriValue,
       "entryClass" -> entryClass,
       "parallelism" -> parallelism,
       "upgradeMode" -> stateProtection.operatorValue,
       "state" -> desiredState.operatorValue
     )
+    if args.nonEmpty then value("args") = Arr(args.map(Str.apply)*)
+    initialSavepointPath.foreach(path => value("initialSavepointPath") = path.snapshotPathValue)
+    allowNonRestoredState.foreach(flag => value("allowNonRestoredState") = Bool(flag))
+    value
+
+final case class FlinkProcessResources(cpu: Double = 1, memory: String = "1024m"):
+  def json: Obj = Obj("resource" -> Obj("cpu" -> cpu, "memory" -> memory))
 
 final case class FlinkDeploymentSpec(
     namespace: Namespace,
@@ -27,19 +37,23 @@ final case class FlinkDeploymentSpec(
     flinkVersion: String,
     job: FlinkJob,
     serviceAccount: Option[String] = None,
-    savepointDirectory: Option[String] = None
+    savepointDirectory: Option[String] = None,
+    flinkConfiguration: Map[String, String] = Map.empty,
+    jobManagerResources: FlinkProcessResources = FlinkProcessResources(),
+    taskManagerResources: FlinkProcessResources = FlinkProcessResources()
 ):
   def json: Obj =
     val spec = Obj(
       "image" -> image,
       "imagePullPolicy" -> "IfNotPresent",
       "flinkVersion" -> flinkVersion,
-      "jobManager" -> Obj("resource" -> Obj("cpu" -> 1, "memory" -> "1024m")),
-      "taskManager" -> Obj("resource" -> Obj("cpu" -> 1, "memory" -> "1024m")),
+      "jobManager" -> jobManagerResources.json,
+      "taskManager" -> taskManagerResources.json,
       "job" -> job.json
     )
     serviceAccount.foreach(value => spec("serviceAccount") = value)
-    savepointDirectory.foreach(value => spec("flinkConfiguration") = Obj("state.savepoints.dir" -> value))
+    val configuration = flinkConfiguration ++ savepointDirectory.map("state.savepoints.dir" -> _)
+    if configuration.nonEmpty then spec("flinkConfiguration") = Obj.from(configuration.toSeq.sortBy(_._1).map((key, value) => key -> Str(value)))
     spec
 
   def resource: Obj =

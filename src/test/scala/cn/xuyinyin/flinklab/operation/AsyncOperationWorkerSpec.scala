@@ -10,6 +10,7 @@ import cn.xuyinyin.flinklab.operator.watch.WatchEventType
 import zio.*
 import zio.stream.*
 import zio.test.*
+import java.time.Instant
 
 object AsyncOperationWorkerSpec extends ZIOSpecDefault:
   private val namespace = Namespace.unsafe("analytics")
@@ -77,5 +78,50 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         _ <- worker.process(accepted.operationId).either
         stored <- store.get(accepted.operationId)
       yield assertTrue(stored.exists(_.state == OperationState.Failed), stored.exists(_.events.exists(_.toString.contains("job is not running"))))
+    },
+    test("applies the validated upgrade protection and fallback policy") {
+      for
+        records <- Ref.make(Vector.empty[String])
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"11","generation":2}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(2), Some(2), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"11","uid":"uid","generation":2},"spec":{"flinkConfiguration":{"state.savepoints.dir":"s3://savepoints/orders"}},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":2}}"""))
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
+        spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1), savepointDirectory = Some("s3://savepoints/orders"))
+        operation = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, name), spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
+        accepted <- worker.submit(RequestId.from("req-upgrade").toOption.get, operation)
+        completed <- worker.process(accepted.operationId)
+        applied <- records.get
+      yield assertTrue(completed.state == OperationState.Completed, applied.exists(raw => raw.contains("\"upgradeMode\":\"savepoint\"") && raw.contains("kubernetes.operator.job.upgrade.last-state-fallback.enabled")))
+    },
+    test("resumes a verifying operation from its persisted event chain") {
+      for
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"8","generation":3}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("8"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"8","uid":"uid","generation":3},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}"""))
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-recovery").toOption.get, operation)
+        _ <- store.transition(accepted.operationId, OperationEvent.ValidationStarted(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.ValidationPassed(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(3).toOption, ResourceVersion.from("8").toOption))
+        _ <- store.transition(accepted.operationId, OperationEvent.WaitingForObservation(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.VerificationStarted(Instant.now()))
+        completed <- worker.process(accepted.operationId)
+      yield assertTrue(completed.state == OperationState.Completed, completed.events.exists(_.isInstanceOf[OperationEvent.VerificationSucceeded]))
     }
   )

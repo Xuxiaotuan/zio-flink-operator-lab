@@ -71,14 +71,23 @@ object OperationCodec:
         case "suspended" => Right(DesiredJobState.Suspended)
         case other => Left(s"unknown desired job state: $other")
       ).getOrElse(Right(DesiredJobState.Running))
+      args <- job.get("args").map(_.arrOpt.toRight("job args must be an array").flatMap(_.toList.foldLeft[Either[String, List[String]]](Right(Nil)) { (acc, item) => for current <- acc; value <- item.strOpt.toRight("job args must contain strings") yield current :+ value })).getOrElse(Right(Nil))
+      initialSavepointPath <- string(job, "initialSavepointPath").map(SnapshotPath.from).map(_.map(Some(_))).getOrElse(Right(None))
+      allowNonRestoredState = string(job, "allowNonRestoredState").flatMap(_.toBooleanOption)
+      configuration: Map[String, String] = spec.get("flinkConfiguration").flatMap(_.objOpt).map(_.toSeq.flatMap { case (key, item) => item.strOpt.orElse(item.numOpt.map(_.toString)).orElse(item.boolOpt.map(_.toString)).map(value => key -> value) }.toMap).getOrElse(Map.empty)
+      jobManagerResources = processResources(spec, "jobManager")
+      taskManagerResources = processResources(spec, "taskManager")
     yield FlinkDeploymentSpec(
       namespace,
       name,
       string(spec, "image").getOrElse("flink:1.20.1"),
       string(spec, "flinkVersion").getOrElse("v1_20"),
-      FlinkJob(jar, string(job, "entryClass").getOrElse("org.apache.flink.streaming.examples.wordcount.WordCount"), parallelism, protection, desiredState),
+      FlinkJob(jar, string(job, "entryClass").getOrElse("org.apache.flink.streaming.examples.wordcount.WordCount"), parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState),
       string(spec, "serviceAccount"),
-      spec.get("flinkConfiguration").flatMap(_.objOpt).flatMap(string(_, "state.savepoints.dir"))
+      configuration.get("state.savepoints.dir"),
+      configuration,
+      jobManagerResources,
+      taskManagerResources
     )
 
   private def resourceRef(value: ujson.Value): Either[String, ResourceRef] =
@@ -102,7 +111,7 @@ object OperationCodec:
       case "ACCEPTED" => OperationEvent.Accepted(at)
       case "VALIDATION_STARTED" => OperationEvent.ValidationStarted(at)
       case "VALIDATION_PASSED" => OperationEvent.ValidationPassed(at)
-      case "SUBMITTED" => OperationEvent.Submitted(at, number(obj, "generation").flatMap(Generation.from(_).toOption), string(obj, "resourceVersion").flatMap(ResourceVersion.from(_).toOption))
+      case "SUBMITTED" => OperationEvent.Submitted(at, number(obj, "generation").flatMap(Generation.from(_).toOption), string(obj, "resourceVersion").flatMap(ResourceVersion.from(_).toOption), string(obj, "uid").flatMap(ResourceUid.from(_).toOption))
       case "WAITING_FOR_OBSERVATION" => OperationEvent.WaitingForObservation(at)
       case "OBSERVED" => OperationEvent.Observed(at, number(obj, "observedGeneration").flatMap(Generation.from(_).toOption))
       case "RECONCILIATION_STARTED" => OperationEvent.ReconciliationStarted(at)
@@ -113,7 +122,7 @@ object OperationCodec:
         val actual = string(obj, "actualProtection").toRight("actualProtection is required").flatMap(actualProtection).fold(error => throw IllegalArgumentException(error), identity)
         OperationEvent.FallbackDetected(at, requested, actual)
       case "VERIFICATION_STARTED" => OperationEvent.VerificationStarted(at)
-      case "VERIFICATION_SUCCEEDED" => OperationEvent.VerificationSucceeded(at)
+      case "VERIFICATION_SUCCEEDED" => OperationEvent.VerificationSucceeded(at, obj.get("evidence").flatMap(value => verificationEvidence(value).toOption))
       case "FAILED" => OperationEvent.Failed(at, string(obj, "reason").getOrElse("operation failed"))
       case "TIMED_OUT" => OperationEvent.TimedOut(at, string(obj, "reason").getOrElse("operation timed out"))
       case "SUPERSEDED" => OperationEvent.Superseded(at, OperationId.from(string(obj, "replacedBy").getOrElse("")).fold(error => throw IllegalArgumentException(error), identity))
@@ -125,11 +134,35 @@ object OperationCodec:
     val resource = resourceRef(snapshot.getOrElse("resource", throw IllegalArgumentException("snapshot.resource is required"))).fold(error => throw IllegalArgumentException(error), identity)
     SnapshotRef(resource, string(snapshot, "state").getOrElse("UNKNOWN"), string(snapshot, "path").flatMap(SnapshotPath.from(_).toOption))
 
+  private def verificationEvidence(value: ujson.Value): Either[String, VerificationEvidence] =
+    val obj = value.obj
+    for
+      resource <- resourceRef(obj.getOrElse("resource", ujson.Obj()))
+      reason <- string(obj, "reason").toRight("verification evidence reason is required")
+    yield VerificationEvidence(
+      resource,
+      string(obj, "resourceVersion").flatMap(ResourceVersion.from(_).toOption),
+      string(obj, "uid").flatMap(ResourceUid.from(_).toOption),
+      number(obj, "generation").flatMap(Generation.from(_).toOption),
+      number(obj, "observedGeneration").flatMap(Generation.from(_).toOption),
+      string(obj, "snapshotState"),
+      string(obj, "snapshotPath").flatMap(SnapshotPath.from(_).toOption),
+      reason
+    )
+
   private def actualProtection(value: String): Either[String, ActualProtection] =
     if value == "EmptyState" then Right(ActualProtection.EmptyState)
     else if value == "LastState" then Right(ActualProtection.LastState)
     else if value.startsWith("Savepoint(") && value.endsWith(")") then SnapshotPath.from(value.stripPrefix("Savepoint(").stripSuffix(")")).map(ActualProtection.Savepoint.apply)
     else Left(s"unknown actual protection: $value")
+
+  private def processResources(spec: collection.Map[String, ujson.Value], key: String): FlinkProcessResources =
+    spec.get(key).flatMap(_.objOpt).flatMap(_.get("resource")).flatMap(_.objOpt).map { resource =>
+      FlinkProcessResources(
+        resource.get("cpu").flatMap(value => value.numOpt.orElse(value.strOpt.flatMap(_.toDoubleOption))).getOrElse(1),
+        resource.get("memory").flatMap(_.strOpt).getOrElse("1024m")
+      )
+    }.getOrElse(FlinkProcessResources())
 
   private def parseInstant(value: String): Either[String, Instant] = scala.util.Try(Instant.parse(value)).toEither.left.map(_.getMessage)
   private def string(value: collection.Map[String, ujson.Value], key: String): Option[String] = value.get(key).flatMap(item => item.strOpt.orElse(item.numOpt.map(_.toString))).filter(_.nonEmpty)

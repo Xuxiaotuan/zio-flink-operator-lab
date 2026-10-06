@@ -39,11 +39,15 @@ final class DefaultResourceObserver(api: KubernetesApi) extends ResourceObserver
             .collectSome
             .catchAll {
               case error: KubernetesApiError if error.status == 410 => cycle
+              case error: KubernetesApiError if error.status == 429 || error.status >= 500 => ZStream.empty
+              case _: java.io.IOException => ZStream.empty
               case error => ZStream.fail(error)
             }
-          initial ++ watched
+          initial ++ watched ++ reconnect
         }
       }
+    def reconnect: ZStream[Any, Throwable, ResourceObservation] =
+      ZStream.fromZIO(ZIO.sleep(100.millis)) *> cycle
     cycle
 
   private final case class Listed(items: List[ResourceObservation], resourceVersion: Option[String])

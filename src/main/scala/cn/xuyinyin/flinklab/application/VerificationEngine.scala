@@ -20,9 +20,12 @@ final case class Evidence(
     snapshotPath: Option[SnapshotPath],
     capturedAt: Instant,
     raw: String,
+    savepointDirectory: Option[SnapshotPath] = None,
     snapshotError: Option[String] = None,
     snapshotFailures: Option[String] = None
-)
+):
+  def audit(reason: String): VerificationEvidence =
+    VerificationEvidence(resource, resourceVersion, uid, generation, observedGeneration, snapshotState, snapshotPath, reason)
 
 object Evidence:
   def fromObservation(namespace: Namespace, observation: ResourceObservation): Evidence =
@@ -33,10 +36,11 @@ object Evidence:
     observation.kind match
       case ResourceKind.StateSnapshot =>
         val snapshot = FlinkStateSnapshotStatus.fromJsonString(observation.payload).toOption
-        Evidence(resource, rv, resource.uid, generation, observedGeneration, ReconciliationState.Unknown, JobState.Unknown, snapshot.flatMap(_.state), snapshot.flatMap(_.path.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload, snapshot.flatMap(_.error), snapshot.flatMap(_.failures))
+        Evidence(resource, rv, resource.uid, generation, observedGeneration, ReconciliationState.Unknown, JobState.Unknown, snapshot.flatMap(_.state), snapshot.flatMap(_.path.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload, snapshotError = snapshot.flatMap(_.error), snapshotFailures = snapshot.flatMap(_.failures))
       case _ =>
         val status = FlinkStatusSnapshot.fromJsonString(observation.payload).toOption
-        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload)
+        val configuration = scala.util.Try(ujson.read(observation.payload)).toOption.flatMap(_.obj.get("spec").flatMap(_.objOpt)).flatMap(_.get("flinkConfiguration")).flatMap(_.objOpt).flatMap(_.get("state.savepoints.dir")).flatMap(_.strOpt).flatMap(SnapshotPath.from(_).toOption)
+        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload, configuration)
 
   private def reconciliation(value: Option[String], error: Option[String]): ReconciliationState =
     if error.exists(_.trim.nonEmpty) then ReconciliationState.Error
@@ -84,9 +88,9 @@ object DefaultVerificationEngine extends VerificationEngine:
           if evidence.jobState == JobState.Suspended then Right(VerificationResult(evidence, "job is suspended"))
           else Left(ControlPlaneError.VerificationFailed(s"expected SUSPENDED, observed ${evidence.jobState}"))
         case FlinkOperation.Snapshot(_, _) =>
-          if evidence.snapshotState.exists(_.equalsIgnoreCase("COMPLETED")) then Right(VerificationResult(evidence, "snapshot completed"))
+          if evidence.snapshotState.exists(_.equalsIgnoreCase("COMPLETED")) && evidence.snapshotPath.nonEmpty then Right(VerificationResult(evidence, "snapshot completed"))
           else
-            val reason = evidence.snapshotError.orElse(evidence.snapshotFailures).getOrElse("snapshot has not completed")
+            val reason = evidence.snapshotError.orElse(evidence.snapshotFailures).getOrElse("snapshot has not completed with a result path")
             Left(ControlPlaneError.VerificationFailed(reason))
         case FlinkOperation.Delete(_, _) => Right(VerificationResult(evidence, "delete acknowledged"))
         case _ =>

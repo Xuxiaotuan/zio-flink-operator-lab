@@ -3,6 +3,7 @@ package cn.xuyinyin.flinklab.domain
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.ControlPlaneError.InvalidTransition
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
+import cn.xuyinyin.flinklab.operation.OperationCodec
 import zio.Scope
 import zio.test.*
 
@@ -41,6 +42,23 @@ object ControlPlaneDomainSpec extends ZIOSpecDefault:
           json("operationId").str.nonEmpty,
           json("requestId").str == "req-1",
           json("events").arr.head("type").str == "ACCEPTED"
+        )
+      },
+      test("persists submitted identity and verification evidence") {
+        val now = Instant.parse("2026-10-03T00:00:00Z")
+        val uid = ResourceUid.from("snapshot-uid").toOption.get
+        val operation = Operation.accepted(RequestId.from("req-evidence").toOption.get, FlinkOperation.Resume(resource), resource, now)
+        val submitted = operation.advance(OperationEvent.ValidationStarted(now.plusSeconds(1))).toOption.get
+          .advance(OperationEvent.ValidationPassed(now.plusSeconds(2))).toOption.get
+          .advance(OperationEvent.Submitted(now.plusSeconds(3), Generation.from(4).toOption, ResourceVersion.from("7").toOption, Some(uid))).toOption.get
+          .advance(OperationEvent.WaitingForObservation(now.plusSeconds(4))).toOption.get
+          .advance(OperationEvent.VerificationStarted(now.plusSeconds(5))).toOption.get
+          .advance(OperationEvent.VerificationSucceeded(now.plusSeconds(6), Some(VerificationEvidence(resource.copy(uid = Some(uid)), ResourceVersion.from("8").toOption, Some(uid), Generation.from(4).toOption, Generation.from(4).toOption, None, None, "job is running")))).toOption.get
+        val restored = OperationCodec.fromJson(OperationCodec.json(submitted))
+        assertTrue(
+          submitted.events.exists(_.toString.contains("snapshot-uid")),
+          restored.isRight,
+          restored.toOption.exists(_.events.exists(_.toString.contains("job is running")))
         )
       }
     )

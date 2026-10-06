@@ -32,7 +32,11 @@ object FlinkOperationFactory:
       metadata <- objectValue(value, "metadata")
       name <- string(metadata, "name").toRight("deployment metadata.name is required")
       spec <- objectValue(value, "spec")
+      _ <- ensureKeys(value.obj, Set("apiVersion", "kind", "metadata", "spec"), "deployment")
+      _ <- ensureKeys(metadata, Set("name", "namespace"), "deployment.metadata")
+      _ <- ensureKeys(spec, Set("image", "imagePullPolicy", "flinkVersion", "jobManager", "taskManager", "job", "serviceAccount", "flinkConfiguration"), "deployment.spec")
       job = spec.get("job").flatMap(_.objOpt).getOrElse(Map.empty[String, ujson.Value])
+      _ <- ensureKeys(job, Set("jarURI", "entryClass", "parallelism", "upgradeMode", "state", "args", "initialSavepointPath", "allowNonRestoredState"), "deployment.spec.job")
       resolvedNamespace <- Namespace.from(namespace)
       resolvedName <- DeploymentName.from(name)
       image = string(spec, "image").getOrElse("flink:1.20.1")
@@ -40,9 +44,17 @@ object FlinkOperationFactory:
       jar <- JobJarUri.from(string(job, "jarURI").getOrElse("local:///opt/flink/examples/streaming/WordCount.jar"))
       entryClass = string(job, "entryClass").getOrElse("org.apache.flink.streaming.examples.wordcount.WordCount")
       parallelism = integer(job, "parallelism").getOrElse(1)
+      protection <- string(job, "upgradeMode").map(StateProtection.parse).getOrElse(Right(StateProtection.Stateless))
+      desiredState <- string(job, "state").map(DesiredJobState.parse).getOrElse(Right(DesiredJobState.Running))
+      args <- stringArray(job, "args")
+      initialSavepointPath <- string(job, "initialSavepointPath").map(SnapshotPath.from).map(_.map(Some(_))).getOrElse(Right(None))
+      allowNonRestoredState = valueBoolean(job, "allowNonRestoredState")
+      jobManagerResources <- processResources(spec, "jobManager")
+      taskManagerResources <- processResources(spec, "taskManager")
+      imagePullPolicy <- string(spec, "imagePullPolicy").map(_.toLowerCase).filter(_ != "ifnotpresent").map(value => Left(s"unsupported imagePullPolicy: $value")).getOrElse(Right(()))
       serviceAccount = string(spec, "serviceAccount")
-      savepointDirectory = objectValue(spec, "flinkConfiguration").toOption.flatMap(string(_, "state.savepoints.dir"))
-    yield FlinkOperation.Deploy(FlinkDeploymentSpec(resolvedNamespace, resolvedName, image, flinkVersion, FlinkJob(jar, entryClass, parallelism), serviceAccount, savepointDirectory))
+      flinkConfiguration <- configuration(spec)
+    yield FlinkOperation.Deploy(FlinkDeploymentSpec(resolvedNamespace, resolvedName, image, flinkVersion, FlinkJob(jar, entryClass, parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState), serviceAccount, flinkConfiguration.get("state.savepoints.dir"), flinkConfiguration, jobManagerResources, taskManagerResources))
 
   def fromSnapshotJson(namespace: String, raw: String): Either[String, FlinkOperation] =
     for
@@ -110,3 +122,33 @@ object FlinkOperationFactory:
   private def objectValue(value: ujson.Value, key: String): Either[String, collection.Map[String, ujson.Value]] = value.obj.get(key).flatMap(_.objOpt).toRight(s"$key object is required")
   private def string(value: collection.Map[String, ujson.Value], key: String): Option[String] = value.get(key).flatMap(item => item.strOpt.orElse(item.numOpt.map(_.toString))).filter(_.nonEmpty)
   private def integer(value: collection.Map[String, ujson.Value], key: String): Option[Int] = value.get(key).flatMap(item => item.numOpt.map(_.toInt).orElse(item.strOpt.flatMap(_.toIntOption))).filter(_ > 0)
+  private def valueBoolean(value: collection.Map[String, ujson.Value], key: String): Option[Boolean] = value.get(key).flatMap(_.boolOpt)
+  private def stringArray(value: collection.Map[String, ujson.Value], key: String): Either[String, List[String]] =
+    value.get(key) match
+      case None => Right(Nil)
+      case Some(item) => item.arrOpt.toRight(s"$key must be an array").flatMap(_.toList.foldLeft[Either[String, List[String]]](Right(Nil)) { (acc, next) => for current <- acc; text <- next.strOpt.toRight(s"$key entries must be strings") yield current :+ text })
+  private def configuration(spec: collection.Map[String, ujson.Value]): Either[String, Map[String, String]] =
+    spec.get("flinkConfiguration") match
+      case None => Right(Map.empty)
+      case Some(value) => value.objOpt.toRight("deployment.spec.flinkConfiguration must be an object").flatMap { config =>
+        Either.cond(config.forall((_, value) => value.strOpt.nonEmpty || value.numOpt.nonEmpty || value.boolOpt.nonEmpty), config.view.mapValues(value => value.strOpt.orElse(value.numOpt.map(_.toString)).orElse(value.boolOpt.map(_.toString)).get).toMap, "deployment.spec.flinkConfiguration values must be scalar")
+      }
+  private def processResources(spec: collection.Map[String, ujson.Value], key: String): Either[String, FlinkProcessResources] =
+    spec.get(key) match
+      case None => Right(FlinkProcessResources())
+      case Some(value) =>
+        value.objOpt.toRight(s"deployment.spec.$key must be an object").flatMap { process =>
+          for
+            _ <- ensureKeys(process, Set("resource"), s"deployment.spec.$key")
+            result <- process.get("resource") match
+              case None => Right(FlinkProcessResources())
+              case Some(resource) =>
+                for
+                  values <- resource.objOpt.toRight(s"deployment.spec.$key.resource must be an object")
+                  _ <- ensureKeys(values, Set("cpu", "memory"), s"deployment.spec.$key.resource")
+                yield FlinkProcessResources(doubleValue(values, "cpu").getOrElse(1), string(values, "memory").getOrElse("1024m"))
+          yield result
+        }
+  private def doubleValue(value: collection.Map[String, ujson.Value], key: String): Option[Double] = value.get(key).flatMap(item => item.numOpt.orElse(item.strOpt.flatMap(_.toDoubleOption))).filter(_ > 0)
+  private def ensureKeys(value: collection.Map[String, ujson.Value], allowed: Set[String], scope: String): Either[String, Unit] =
+    value.keys.find(!allowed.contains(_)).toLeft(()).left.map(key => s"unsupported field in $scope: $key")

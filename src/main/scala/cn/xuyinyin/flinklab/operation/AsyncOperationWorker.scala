@@ -4,7 +4,7 @@ import cn.xuyinyin.flinklab.application.{DefaultPolicyEngine, DefaultVerificatio
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
-import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
+import cn.xuyinyin.flinklab.kubernetes.{KubernetesApi, KubernetesApiError}
 import cn.xuyinyin.flinklab.operator.observer.ResourceObserver
 import zio.*
 
@@ -44,16 +44,36 @@ final class DefaultAsyncOperationWorker(
   override def process(id: OperationId): IO[ControlPlaneError, Operation] = mutex.withPermit {
     for
       current <- getRequired(id)
-      completed <- if current.state != OperationState.Accepted then ZIO.succeed(current)
-        else
+      completed <- current.state match
+        case OperationState.Accepted =>
           for
             claimed <- transition(id, OperationEvent.ValidationStarted(Instant.now()))
             result <- coordinator.withLock(claimed.resource, id)(runOperation(id, claimed))
           yield result
+        case OperationState.Validating => coordinator.withLock(current.resource, id)(runOperation(id, current))
+        case OperationState.Submitted | OperationState.WaitingForObservation | OperationState.Reconciling | OperationState.Verifying => coordinator.withLock(current.resource, id)(resumeOperation(id, current))
+        case _ => ZIO.succeed(current)
     yield completed
   }.catchAll { error =>
     terminalize(id, error) *> ZIO.fail(error)
   }
+
+  private def resumeOperation(id: OperationId, current: Operation): IO[ControlPlaneError, Operation] =
+    for
+      _ <- current.state match
+        case OperationState.Submitted => transition(id, OperationEvent.WaitingForObservation(Instant.now())).unit
+        case OperationState.WaitingForObservation | OperationState.Reconciling => transition(id, OperationEvent.VerificationStarted(Instant.now())).unit
+        case OperationState.Verifying => ZIO.unit
+        case _ => ZIO.unit
+      _ <- current.state match
+        case OperationState.Submitted => transition(id, OperationEvent.VerificationStarted(Instant.now())).unit
+        case _ => ZIO.unit
+      target = observationTarget(id, current)
+      expectedGeneration = current.events.collect { case OperationEvent.Submitted(_, generation, _, _) => generation }.lastOption.flatten
+      evidence <- awaitVerification(current.command, target, expectedGeneration)
+      _ <- transition(id, OperationEvent.Observed(Instant.now(), evidence.observedGeneration))
+      result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now(), Some(evidence.audit("recovered verification"))))
+    yield result
 
   private def runOperation(id: OperationId, current: Operation): IO[ControlPlaneError, Operation] =
     for
@@ -61,17 +81,23 @@ final class DefaultAsyncOperationWorker(
       validated <- policy.validate(current.command, observed)
       _ <- transition(id, OperationEvent.ValidationPassed(Instant.now()))
       response <- submitToKubernetes(id, validated.operation).mapError(submissionError)
-      _ <- transition(id, OperationEvent.Submitted(Instant.now(), metadata(response)._1, metadata(response)._2))
+      responseMetadata = metadata(response)
+      _ <- transition(id, OperationEvent.Submitted(Instant.now(), responseMetadata._1, responseMetadata._2, responseMetadata._3))
       _ <- transition(id, OperationEvent.WaitingForObservation(Instant.now()))
       completed <- current.command match
         case FlinkOperation.Delete(_, _) =>
           for
             _ <- transition(id, OperationEvent.VerificationStarted(Instant.now()))
-            _ <- awaitDeletion(current.resource)
+            deleteTarget = validated.operation match
+              case FlinkOperation.Delete(target, _) => target
+              case _ => current.resource
+            _ <- if response == "already absent" then ZIO.unit else awaitDeletion(deleteTarget)
             result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now()))
           yield result
         case _ =>
-          val target = observationTarget(id, current)
+          val target = observationTarget(id, current).copy(uid = current.command match
+            case FlinkOperation.Snapshot(_, _) => responseMetadata._3
+            case _ => None)
           for
             _ <- transition(id, OperationEvent.VerificationStarted(Instant.now()))
             expectedGeneration = current.command match
@@ -79,7 +105,7 @@ final class DefaultAsyncOperationWorker(
               case _ => metadata(response)._1
             evidence <- awaitVerification(current.command, target, expectedGeneration)
             _ <- transition(id, OperationEvent.Observed(Instant.now(), evidence.observedGeneration))
-            result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now()))
+            result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now(), Some(evidence.audit("verification succeeded"))))
           yield result
     yield completed
 
@@ -97,7 +123,8 @@ final class DefaultAsyncOperationWorker(
   private def observationTarget(id: OperationId, operation: Operation): ResourceRef =
     operation.command match
       case FlinkOperation.Snapshot(target, policy) =>
-        ResourceRef(target.namespace, ResourceKind.StateSnapshot, policy.snapshotName.getOrElse(snapshotName(target.name, id)))
+        val uid = operation.events.collect { case OperationEvent.Submitted(_, _, _, value) => value }.lastOption.flatten
+        ResourceRef(target.namespace, ResourceKind.StateSnapshot, policy.snapshotName.getOrElse(snapshotName(target.name, id)), uid)
       case _ => operation.resource
 
   private def snapshotName(target: DeploymentName, id: OperationId): DeploymentName =
@@ -106,7 +133,7 @@ final class DefaultAsyncOperationWorker(
     DeploymentName.unsafe((base + suffix).take(63))
 
   private def observedState(resource: ResourceRef, evidence: Evidence): ObservedJobState =
-    ObservedJobState(resource, evidence.jobState, evidence.reconciliation, evidence.generation, evidence.observedGeneration, evidence.snapshotPath)
+    ObservedJobState(resource, evidence.jobState, evidence.reconciliation, evidence.generation, evidence.observedGeneration, evidence.savepointDirectory, evidence.snapshotPath)
 
   private def awaitVerification(operation: FlinkOperation, target: ResourceRef, expectedGeneration: Option[Generation]): IO[ControlPlaneError, Evidence] =
     observer.observe(target.namespace, target.kind, Some(target.name.nameValue))
@@ -136,7 +163,10 @@ final class DefaultAsyncOperationWorker(
 
   private def awaitDeletion(target: ResourceRef): IO[ControlPlaneError, Unit] =
     observer.observe(target.namespace, target.kind, Some(target.name.nameValue))
-      .filter(_.eventType == cn.xuyinyin.flinklab.operator.watch.WatchEventType.Deleted)
+      .filter { observation =>
+        observation.eventType == cn.xuyinyin.flinklab.operator.watch.WatchEventType.Deleted ||
+          (target.uid.nonEmpty && observation.uid.nonEmpty && observation.uid != target.uid.map(_.resourceUidValue))
+      }
       .runHead
       .mapError(error => ControlPlaneError.VerificationFailed(Option(error.getMessage).getOrElse(error.toString)))
       .flatMap(value => ZIO.when(value.isEmpty)(ZIO.fail(ControlPlaneError.VerificationFailed("delete observation stream completed before the target was deleted"))))
@@ -165,20 +195,33 @@ final class DefaultAsyncOperationWorker(
   private def submitToKubernetes(id: OperationId, operation: FlinkOperation): IO[Throwable, String] = operation match
     case FlinkOperation.Deploy(spec) => api.apply(spec.namespace, spec.resource.render(), dryRun = false)
     case FlinkOperation.Upgrade(target, spec, _) => api.apply(target.namespace, spec.resource.render(), dryRun = false)
-    case FlinkOperation.Suspend(target, _) => api.patch(target.namespace, target.kind, target.name.nameValue, """{"spec":{"job":{"state":"suspended"}}}""")
+    case FlinkOperation.Suspend(target, policy) => api.patch(target.namespace, target.kind, target.name.nameValue, if policy == SuspendPolicy.KeepState then cn.xuyinyin.flinklab.operator.savepoint.SavepointPatch.suspend else """{"spec":{"job":{"state":"suspended","upgradeMode":"stateless"}}}""")
     case FlinkOperation.Resume(target) => api.patch(target.namespace, target.kind, target.name.nameValue, """{"spec":{"job":{"state":"running"}}}""")
-    case FlinkOperation.Restart(target, _) => api.patch(target.namespace, target.kind, target.name.nameValue, """{"spec":{"restartNonce":""" + java.lang.System.currentTimeMillis() + """}}""")
+    case FlinkOperation.Restart(target, policy) =>
+      val fallback = policy.fallback == FallbackPolicy.AllowLastState
+      api.patch(target.namespace, target.kind, target.name.nameValue, s"""{"spec":{"restartNonce":${java.lang.System.currentTimeMillis()},"job":{"upgradeMode":"${policy.protection.operatorValue}"},"flinkConfiguration":{"kubernetes.operator.job.upgrade.last-state-fallback.enabled":"$fallback"}}}""")
     case FlinkOperation.Snapshot(target, policy) =>
       val spec = FlinkStateSnapshotSpec(target.namespace, policy.snapshotName.getOrElse(snapshotName(target.name, id)), target.kind, target.name, policy.snapshotType)
-      api.apply(target.namespace, spec.resource.render(), dryRun = false)
-    case FlinkOperation.Delete(target, _) => api.delete(target.namespace, target.kind, target.name.nameValue)
+      val checkName = policy.snapshotName match
+        case None => ZIO.unit
+        case Some(name) =>
+          api.get(target.namespace, ResourceKind.StateSnapshot, name.nameValue).either.flatMap {
+            case Left(KubernetesApiError(404, _)) => ZIO.unit
+            case Left(error) => ZIO.fail(error)
+            case Right(raw) if raw.trim.isEmpty => ZIO.unit
+            case Right(_) => ZIO.fail(IllegalStateException(s"snapshot resource already exists: ${name.nameValue}"))
+          }
+      checkName *> api.apply(target.namespace, spec.resource.render(), dryRun = false)
+    case FlinkOperation.Delete(target, _) =>
+      api.delete(target.namespace, target.kind, target.name.nameValue, target.uid).catchSome { case KubernetesApiError(404, _) => ZIO.succeed("already absent") }
 
-  private def metadata(response: String): (Option[Generation], Option[ResourceVersion]) =
+  private def metadata(response: String): (Option[Generation], Option[ResourceVersion], Option[ResourceUid]) =
     scala.util.Try(ujson.read(response)).toOption.flatMap(_.obj.get("metadata").flatMap(_.objOpt)).map { metadata =>
       val generation = metadata.get("generation").flatMap(value => value.numOpt.map(_.toLong).orElse(value.strOpt.flatMap(_.toLongOption))).flatMap(Generation.from(_).toOption)
       val resourceVersion = metadata.get("resourceVersion").flatMap(_.strOpt).flatMap(ResourceVersion.from(_).toOption)
-      generation -> resourceVersion
-    }.getOrElse(None -> None)
+      val uid = metadata.get("uid").flatMap(_.strOpt).flatMap(ResourceUid.from(_).toOption)
+      (generation, resourceVersion, uid)
+    }.getOrElse((None, None, None))
 
 object AsyncOperationWorker:
   val live: ZLayer[KubernetesApi & OperationStore & PolicyEngine & ResourceCoordinator, Nothing, AsyncOperationWorker] =
@@ -191,6 +234,8 @@ object AsyncOperationWorker:
         mutex <- OperationMutex.make
         queue <- Queue.unbounded[OperationId]
         worker = new DefaultAsyncOperationWorker(api, cn.xuyinyin.flinklab.operator.observer.ResourceObserver.live(api), DefaultVerificationEngine, store, mutex, policy, coordinator, Some(queue))
+        pending <- store.list.tapError(error => Console.printLineError("operation recovery scan failed: " + error.message).ignore).catchAll(_ => ZIO.succeed(List.empty[Operation]))
+        _ <- ZIO.foreachDiscard(pending.filter(operation => Set(OperationState.Accepted, OperationState.Validating, OperationState.Submitted, OperationState.WaitingForObservation, OperationState.Reconciling, OperationState.Verifying).contains(operation.state)))(operation => queue.offer(operation.id))
         _ <- queue.take.flatMap(worker.process).catchAll(error => Console.printLineError(s"operation worker failed: ${error.message}").ignore).forever.forkScoped
       yield worker
     }

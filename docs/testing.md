@@ -13,7 +13,9 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、CLI/HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
 
-以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile 和两副本统一 operation 状态已经有现场证据；真实 checkpoint/savepoint 写入 RustFS、恢复、跨节点故障演练，以及 FallbackDetected 的生产语义仍未完成。
+本轮实际结果：`sbt -batch test` 通过 98 个测试；`sbt -batch assembly` 成功生成 assembly；`mvn -B -f job/pom.xml package -DskipTests` 返回 `BUILD SUCCESS`。
+
+以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile 和两副本统一 operation 状态已经有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。真实 checkpoint/savepoint 写入 RustFS、恢复、跨节点故障演练、锁租约接管，以及 FallbackDetected 的生产语义仍未完成。
 - 覆盖 CLI/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
 - Maven Job：应以本轮命令的 `BUILD SUCCESS` 为准。
 
