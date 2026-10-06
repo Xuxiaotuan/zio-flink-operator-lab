@@ -34,13 +34,15 @@ object Evidence:
         Evidence(resource, rv, resource.uid, generation, observedGeneration, ReconciliationState.Unknown, JobState.Unknown, snapshot.flatMap(_.state), snapshot.flatMap(_.path.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload)
       case _ =>
         val status = FlinkStatusSnapshot.fromJsonString(observation.payload).toOption
-        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState)), jobState(status.flatMap(_.jobState)), None, status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload)
+        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload)
 
-  private def reconciliation(value: Option[String]): ReconciliationState = value.map(_.toUpperCase) match
-    case Some("DEPLOYED") | Some("READY") => ReconciliationState.Ready
-    case Some("RECONCILING") => ReconciliationState.Reconciling
-    case Some("ERROR") | Some("FAILED") => ReconciliationState.Error
-    case _ => ReconciliationState.Unknown
+  private def reconciliation(value: Option[String], error: Option[String]): ReconciliationState =
+    if error.exists(_.trim.nonEmpty) then ReconciliationState.Error
+    else value.map(_.toUpperCase) match
+      case Some("DEPLOYED") | Some("READY") => ReconciliationState.Ready
+      case Some("RECONCILING") | Some("UPGRADING") => ReconciliationState.Reconciling
+      case Some("ERROR") | Some("FAILED") => ReconciliationState.Error
+      case _ => ReconciliationState.Unknown
 
   private def jobState(value: Option[String]): JobState = value.map(_.toUpperCase) match
     case Some("RUNNING") => JobState.Running

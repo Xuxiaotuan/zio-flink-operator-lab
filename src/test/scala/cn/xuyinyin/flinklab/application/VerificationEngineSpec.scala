@@ -27,5 +27,11 @@ object VerificationEngineSpec extends ZIOSpecDefault:
       val operation = FlinkOperation.Deploy(FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1)))
       val observation = ResourceObservation(WatchEventType.Added, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")
       assertTrue(DefaultVerificationEngine.verify(operation, ref, Evidence.fromObservation(namespace, observation), Generation.from(4).toOption).isLeft)
+    },
+    test("treats an operator status error as a deterministic verification failure") {
+      val operation = FlinkOperation.Deploy(FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1)))
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("10"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"10","uid":"uid","generation":3},"status":{"lifecycleState":"FAILED","error":"operator rejected the resource","reconciliationStatus":{"state":"UPGRADING"},"observedGeneration":3}}""")
+      val evidence = Evidence.fromObservation(namespace, observation)
+      assertTrue(evidence.reconciliation == ReconciliationState.Error, DefaultVerificationEngine.verify(operation, ref, evidence).isLeft)
     }
   )
