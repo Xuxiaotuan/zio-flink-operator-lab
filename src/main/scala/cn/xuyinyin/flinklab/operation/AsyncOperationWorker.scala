@@ -177,6 +177,6 @@ object AsyncOperationWorker:
         mutex <- OperationMutex.make
         queue <- Queue.unbounded[OperationId]
         worker = new DefaultAsyncOperationWorker(api, cn.xuyinyin.flinklab.operator.observer.ResourceObserver.live(api), DefaultVerificationEngine, store, mutex, policy, coordinator, Some(queue))
-        _ <- queue.take.flatMap(worker.process).catchAll(_ => ZIO.unit).forever.forkScoped
+        _ <- queue.take.flatMap(worker.process).catchAll(error => Console.printLineError(s"operation worker failed: ${error.message}").ignore).forever.forkScoped
       yield worker
     }
