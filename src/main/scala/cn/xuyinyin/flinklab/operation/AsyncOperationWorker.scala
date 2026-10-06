@@ -28,14 +28,17 @@ final class DefaultAsyncOperationWorker(
     store: OperationStore,
     mutex: OperationMutex,
     policy: PolicyEngine = new DefaultPolicyEngine,
-    coordinator: ResourceCoordinator = InMemoryResourceCoordinator
+    coordinator: ResourceCoordinator = InMemoryResourceCoordinator,
+    scheduler: Option[Queue[OperationId]] = None
 ) extends AsyncOperationWorker:
   private val controlPlane = new DefaultFlinkControlPlane(store)
 
   override def submit(requestId: RequestId, operation: FlinkOperation): IO[ControlPlaneError, AcceptedOperation] =
     for
       accepted <- controlPlane.accept(requestId, operation)
-      _ <- process(accepted.operationId).forkDaemon
+      _ <- scheduler match
+        case Some(queue) => queue.offer(accepted.operationId).unit
+        case None => process(accepted.operationId).forkDaemon.unit
     yield accepted
 
   override def process(id: OperationId): IO[ControlPlaneError, Operation] = mutex.withPermit {
@@ -165,12 +168,15 @@ final class DefaultAsyncOperationWorker(
 
 object AsyncOperationWorker:
   val live: ZLayer[KubernetesApi & OperationStore & PolicyEngine & ResourceCoordinator, Nothing, AsyncOperationWorker] =
-    ZLayer.fromZIO {
+    ZLayer.scoped {
       for
         api <- ZIO.service[KubernetesApi]
         store <- ZIO.service[OperationStore]
         policy <- ZIO.service[PolicyEngine]
         coordinator <- ZIO.service[ResourceCoordinator]
         mutex <- OperationMutex.make
-      yield new DefaultAsyncOperationWorker(api, cn.xuyinyin.flinklab.operator.observer.ResourceObserver.live(api), DefaultVerificationEngine, store, mutex, policy, coordinator)
+        queue <- Queue.unbounded[OperationId]
+        worker = new DefaultAsyncOperationWorker(api, cn.xuyinyin.flinklab.operator.observer.ResourceObserver.live(api), DefaultVerificationEngine, store, mutex, policy, coordinator, Some(queue))
+        _ <- queue.take.flatMap(worker.process).catchAll(_ => ZIO.unit).forever.forkScoped
+      yield worker
     }
