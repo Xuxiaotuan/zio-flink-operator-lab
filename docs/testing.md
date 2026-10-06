@@ -35,6 +35,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 ### 最新现场验收（2026-10-06）
 
+- PipelineRun `zio-flink-operator-lab-582f4`（Jenkins build `#24`）成功：包含 StatefulCounterJob 的 Maven 打包、带 S3 插件的 Flink Job 镜像构建/推送，以及控制面 Deployment rollout。控制面镜像为 `build-24-ba815f757367`，测试 Job 镜像为 `100.97.53.78:5001/xxt/zio-flink-stateful-job:build-24-ba815f757367`。
 - PipelineRun `zio-flink-operator-lab-96csb`（Jenkins build `#23`）成功：提交 `7e0a00b` 的测试、assembly、镜像推送和目标 Deployment rollout 均通过。最终镜像为 `build-23-7e0a00bfa84d`。
 - 新镜像 Deployment 为 `2/2`，两个 Pod 分别运行在 `xxt` 和 `xjw`；NodePort `30882` 的 `/healthz` 和 `/readyz` 均返回 `{"status":"ok"}`。
 - 使用 `dryrun-7e0a00b` 在目标集群执行 HTTP `POST /v1/deployments?namespace=bigdata-lab&dryRun=true`，API 返回 dry-run 对象预览；随后查询 `FlinkDeployment/dryrun-7e0a00b` 返回 `NotFound`，证明该请求未创建业务 CR，也未进入 operation worker。
