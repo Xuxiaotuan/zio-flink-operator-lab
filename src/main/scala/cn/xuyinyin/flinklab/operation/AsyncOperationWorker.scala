@@ -111,7 +111,7 @@ final class DefaultAsyncOperationWorker(
       .map { evidence =>
         verifier.verify(operation, target, evidence, expectedGeneration) match
           case Right(result) => Some(Right(result.evidence))
-          case Left(error) if evidence.jobState == JobState.Failed || evidence.reconciliation == ReconciliationState.Error => Some(Left(error))
+          case Left(error) if deterministicFailure(evidence) => Some(Left(error))
           case Left(_) => None
       }
       .collectSome
@@ -123,6 +123,13 @@ final class DefaultAsyncOperationWorker(
         case None => ZIO.fail(ControlPlaneError.VerificationFailed("verification stream completed before the submitted generation was observed"))
       }
       .timeoutFail(ControlPlaneError.VerificationTimedOut("verification timed out while waiting for the submitted generation"))(30.seconds)
+
+  private def deterministicFailure(evidence: Evidence): Boolean =
+    evidence.jobState == JobState.Failed || evidence.reconciliation == ReconciliationState.Error || evidence.snapshotState.exists { state =>
+      state.toUpperCase match
+        case "FAILED" | "ABANDONED" | "ERROR" => true
+        case _ => false
+    }
 
   private def awaitDeletion(target: ResourceRef): IO[ControlPlaneError, Unit] =
     observer.observe(target.namespace, target.kind, Some(target.name.nameValue))

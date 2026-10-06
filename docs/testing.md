@@ -13,7 +13,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、CLI/HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
 
-未完成项：本轮没有重新执行目标集群 PipelineRun，也没有把真实 Flink Operator reconcile、checkpoint/savepoint、跨节点故障恢复和完整 FallbackDetected/Superseded 语义作为通过条件。以下测试结果只说明代码级契约和本地构建通过，不能替代现场验收。
+以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile 和两副本统一 operation 状态已经有现场证据；真实 checkpoint/savepoint 写入 RustFS、恢复、跨节点故障演练，以及 FallbackDetected 的生产语义仍未完成。
 - 覆盖 CLI/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段和重试策略。
 - Maven Job：应以本轮命令的 `BUILD SUCCESS` 为准。
 
@@ -30,9 +30,16 @@ mvn -B -f job/pom.xml package -DskipTests
 - 从两台节点访问 `/v1/state?namespace=bigdata-lab` 都读到同一个 `zio-word-count` CR，backend 为 `kubernetes`，生命周期为 `STABLE`。
 - 通过 HTTP 提交 `FlinkDeployment` 后，Operator 让 JobManager、TaskManager 进入 Ready，Job 进入 `FINISHED`，并产生 jobId `475c0a0e218426706464212870d4e5cf`。
 
-这证明了提交、Operator reconcile、Pod 启动、Job 完成和两副本统一读取状态。checkpoint/savepoint 的真实路径和 RustFS 写入仍需在带 S3 插件与 Secret 的业务 Job 上单独验收。
+### 最新现场验收（2026-10-06）
 
-本轮此前 PipelineRun `zio-flink-operator-lab-6hkpd`（Jenkins build `#10`）为 `Succeeded`：70 个 Scala 测试通过，assembly 成功，镜像推送完成，目标 Deployment rollout 成功。继续开发后触发的 PipelineRun `zio-flink-operator-lab-fp5wg`（Jenkins build `#11`）在 Source 阶段因 GitHub `git clone` 连接被重置而失败，测试和部署阶段未执行；已在 Pipeline Source 阶段加入三次有限重试和 HTTP/1.1。该次失败记录为 `external_blocked`，不能用旧 Deployment 的独立健康状态替代新提交的 CI/CD 证据。
+- PipelineRun `zio-flink-operator-lab-zt49r`（Jenkins build `#19`）成功：提交 `cad1a35` 的测试、assembly、镜像推送和目标 Deployment rollout 均通过。最终镜像为 `build-19-cad1a359328e`。
+- Deployment 为 `2/2`，两个 Pod 分别运行在 `xxt` 和 `xjw`；两个 NodePort 地址的 `/healthz` 均返回 `{"status":"ok"}`。
+- 请求 `smoke-20261006-5` 的 operation `c3f6530c-9777-43b4-bbb5-8b35a831cc9a` 在两个节点返回完全相同的 `COMPLETED` 事件链：`SUBMITTED → WAITING_FOR_OBSERVATION → OBSERVED → VERIFICATION_SUCCEEDED`。
+- 对应 `FlinkDeployment/zio-control-plane-smoke-5` 状态为 `READY/FINISHED/DEPLOYED`。这证明了 HTTP 提交、Operation CR、resourceVersion/watch 观察、Operator reconcile、自然结束任务判定和两副本统一读取状态。
+
+这组证据不包含 checkpoint/savepoint 的成功路径。`FlinkStateSnapshot` API 和状态投影已经实现，但 RustFS endpoint、S3 插件、Secret、真实快照路径和恢复连续性仍需单独验收。
+
+此前 build `#11` 的 Source 阶段曾因 GitHub 连接重置而 `external_blocked`；后续 PipelineRun `#19` 已成功，因此当前提交已有完整 CI/CD 证据。历史失败仍保留用于说明重试配置的背景。
 
 ## 测试覆盖
 

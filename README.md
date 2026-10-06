@@ -88,6 +88,6 @@ sbt "run serve"
 
 项目使用 Scala 3.3.5、ZIO 2.1.11、ZIO Streams 2.1.11、Kubernetes Java Client 20.0.1，建议 JDK 17。
 
-当前服务读取 Operator CR 的状态摘要。逐个 checkpoint 的 task/subtask 明细需要 Flink REST，当前不属于 Kubernetes API 适配器。真实 Operator reconcile、checkpoint、savepoint 和恢复结果必须在目标集群单独验证；本地单测和 dry-run 不代表这些结果已经完成。
+当前服务读取 Operator CR 的状态摘要。逐个 checkpoint 的 task/subtask 明细需要 Flink REST，当前不属于 Kubernetes API 适配器。目标集群的 Operator reconcile、两副本统一 operation 状态和自然结束任务验证已完成；checkpoint/savepoint 写入 RustFS、恢复连续性和跨节点故障演练仍需单独验收，本地单测和 dry-run 不代表这些结果已经完成。
 
 构建、Kubernetes/RustFS 配置和本地多副本部署见 [部署](docs/deployment.md)；验证记录见 [测试与证据](docs/testing.md)。

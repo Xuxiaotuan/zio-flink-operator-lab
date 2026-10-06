@@ -125,4 +125,4 @@ helm upgrade --install flink-kubernetes-operator \
   --set watchNamespaces[0]=bigdata-lab
 ```
 
-目标集群的 Operator、两副本服务和 `zio-word-count` 示例 Job 已完成一次运行验证；savepoint 仍需把 RustFS endpoint、S3 插件和凭据以目标 Job 的 Secret 方式接入后再验收。
+目标集群的 Operator、两副本服务和 `zio-control-plane-smoke-5` 示例 Job 已完成一次运行验证：两个副本分别调度到 `xjw`、`xxt`，并从两个 NodePort 读取到同一个 `COMPLETED` operation。savepoint 仍需把 RustFS endpoint、S3 插件和凭据以目标 Job 的 Secret 方式接入后再验收；当前没有把 `FlinkStateSnapshot` CR 已创建误报为 RustFS 写入成功。

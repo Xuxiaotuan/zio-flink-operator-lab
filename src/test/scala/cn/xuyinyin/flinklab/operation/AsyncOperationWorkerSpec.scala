@@ -56,5 +56,26 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         completed <- worker.process(accepted.operationId)
         applied <- records.get
       yield assertTrue(completed.state == OperationState.Completed, applied.exists(_.contains("FlinkStateSnapshot")), applied.exists(_.contains("orders-savepoint")))
+    },
+    test("terminalizes an abandoned snapshot instead of waiting for a timeout") {
+      for
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"10"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        snapshotName = DeploymentName.unsafe("orders-abandoned")
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.StateSnapshot, snapshotName.nameValue, Some("10"), Some("snapshot-uid"), None, None, """{"kind":"FlinkStateSnapshot","metadata":{"name":"orders-abandoned","resourceVersion":"10","uid":"snapshot-uid"},"status":{"state":"ABANDONED","error":"job is not running"}}"""))
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
+        operation = FlinkOperation.Snapshot(ResourceRef(namespace, ResourceKind.Deployment, name), SnapshotPolicy(SnapshotType.Savepoint, Some(snapshotName)))
+        accepted <- worker.submit(RequestId.from("req-abandoned").toOption.get, operation)
+        _ <- worker.process(accepted.operationId).either
+        stored <- store.get(accepted.operationId)
+      yield assertTrue(stored.exists(_.state == OperationState.Failed), stored.exists(_.events.exists(_.isInstanceOf[OperationEvent.Failed])))
     }
   )
