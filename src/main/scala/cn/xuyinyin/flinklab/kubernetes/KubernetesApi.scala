@@ -3,6 +3,7 @@ package cn.xuyinyin.flinklab.kubernetes
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.operator.watch.{WatchEvent, WatchEventType}
+import com.google.gson.reflect.TypeToken
 import io.kubernetes.client.openapi.{ApiClient, JSON, Pair}
 import io.kubernetes.client.openapi.apis.CustomObjectsApi
 import io.kubernetes.client.util.{Config, Watch}
@@ -109,7 +110,8 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
           name.foreach(value => builder.fieldSelector(s"metadata.name=$value"))
           resourceVersion.foreach(value => builder.resourceVersion(value))
           val call = builder.allowWatchBookmarks(true).watch(true).buildCall(null)
-          (client, Watch.createWatch[Object](client, call, classOf[Object]))
+          val responseType = new TypeToken[Watch.Response[Object]]() {}.getType
+          (client, Watch.createWatch[Object](client, call, responseType))
         }
       ) { case (_, watch) => ZIO.attemptBlocking(watch.close()).ignore }
         .map { case (_, watch) =>
