@@ -13,7 +13,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、CLI/HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
 
-本轮实际结果：`sbt -batch test` 通过 111 个测试；`sbt -batch assembly` 成功生成 assembly（SHA-1 `a557d87bc5b552f874b4a91833596d34bf012030`）；`mvn -B -f job/pom.xml package -DskipTests` 返回 `BUILD SUCCESS`；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
+本轮实际结果：`sbt -batch test` 通过 112 个测试；`sbt -batch assembly` 成功生成 assembly（SHA-1 `f1550e37275e4f8cf5154e82762d9b2a2c9c52d2`）；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复和单副本故障演练已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。锁租约接管已具备代码和回归测试，仍需单独的 Kubernetes Lock CR 现场演练记录。
 
@@ -38,6 +38,11 @@ mvn -B -f job/pom.xml package -DskipTests
 - 通过 HTTP 提交 `FlinkDeployment` 后，Operator 让 JobManager、TaskManager 进入 Ready，Job 进入 `FINISHED`，并产生 jobId `475c0a0e218426706464212870d4e5cf`。
 
 ### 最新现场验收（2026-10-07）
+
+- PipelineRun `zio-flink-operator-lab-jddn6`（Jenkins build `#30`）成功：提交 `a4ffa3b` 的 112 个测试、assembly、控制面镜像和 Stateful Job 镜像均完成；目标 Deployment rollout 到 `build-30-a4ffa3bfb705`，两个副本分别位于 xjw、xxt，两台 NodePort 的 `/healthz` 均返回 `{"status":"ok"}`。
+- 首次使用 build `#29` 做真实严格 Savepoint 升级时，operation `b34bf428-6a80-387f-8e96-b95ba49d11dd` 正确进入 `FAILED`，原因是 Operator 的升级结果路径位于 `status.jobStatus.upgradeSavepointPath`，旧观察逻辑只读取 `savepointInfo.lastSavepoint.location`，且不能把 READY 但证据暂缺视为确定失败。该现场失败促成 `a4ffa3b` 修复，并保留为回归依据。
+- build `#30` 部署后，真实 `zio-e2e-strict-savepoint` 通过 HTTP 提交严格 Savepoint 升级；operation `966c9524-0494-373c-991a-ed2ccc30f27e` 最终为 `COMPLETED`，事件包含 `SUBMITTED → WAITING_FOR_OBSERVATION → OBSERVED → VERIFICATION_SUCCEEDED`，generation/observedGeneration 均为 `3`，审计证据保存路径 `s3://flink-savepoints/zio-e2e-strict/savepoints/savepoint-176ced-43a90de992e0`。
+- 同一 Job 的 Flink 日志记录从该 Savepoint 恢复，并连续完成 checkpoint `302` 至 `318`；RustFS 对该路径的 `_metadata` HEAD 返回 HTTP 200。验证后通过 operation `40fe3b54-1380-37df-bd6f-24e3411e96ef` 删除 Deployment，两个升级 Snapshot CR 也已删除；复查没有 `zio-e2e-*` 或 smoke 的 FlinkDeployment、FlinkStateSnapshot、Pod、Service、ReplicaSet、Deployment 或 Lock 残留。对应的 FlinkOperation CR 和 RustFS 快照对象保留为审计和恢复证据。
 
 - PipelineRun `zio-flink-operator-lab-wjclx`（Jenkins build `#27`）成功：提交 `0561654` 的测试、assembly、控制面镜像和 Stateful Job 镜像均完成，目标 Deployment rollout 到 `build-27-0561654c8687`。
 - PipelineRun `zio-flink-operator-lab-wh67d`（Jenkins build `#28`）成功：提交 `0e72734` 的 108 个测试、assembly、控制面镜像和 Stateful Job 镜像均完成，目标 Deployment rollout 到 `build-28-0e72734e935c`；两副本分别位于 xxt、xjw。

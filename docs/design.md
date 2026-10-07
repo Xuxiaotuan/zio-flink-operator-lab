@@ -84,7 +84,7 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 - Job：`jobStatus.jobId`、`jobStatus.jobName`、`jobStatus.state`、`startTime`、`updateTime`。
 - 条件与错误：`conditions`、`status.error`。
 - checkpoint 摘要：`jobStatus.checkpointInfo`。
-- savepoint 摘要：`jobStatus.savepointInfo`，包括最后路径和历史记录。
+- savepoint 摘要：`jobStatus.savepointInfo`，包括最后路径和历史记录；升级 Savepoint 还可能由 Operator 写入 `jobStatus.upgradeSavepointPath`，验证器将两者都作为结果路径来源。
 
 快照请求的状态来自 `FlinkStateSnapshot.status`，包括 `state`、`path`、`error`、`failures`、`triggerId` 和时间戳。字段以目标集群安装的 CRD 为准。
 
