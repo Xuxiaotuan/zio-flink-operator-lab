@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 
+/** Kubernetes OperationStore：把 operation 序列化到 FlinkOperation CR，并用 resourceVersion 做跨副本条件更新。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
@@ -8,11 +9,13 @@ import zio.*
 
 /** Durable operation store backed by a FlinkOperation custom resource in Kubernetes. */
 final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
+  /** 创建 CR；409 映射为幂等冲突，由上层决定是否复用已有 operation。 */
   override def create(operation: Operation): IO[ControlPlaneError, Unit] =
     api.create(operation.resource.namespace, KubernetesOperationResource.render(operation))
       .mapError(error => mapError(operation.id, error))
       .unit
 
+  /** 读取当前 CR、按领域状态机推进，再带 resourceVersion patch 回 API Server。 */
   override def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation] =
     for
       namespace <- ZIO.succeed(Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity))
@@ -57,6 +60,7 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
     ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
 
 object KubernetesOperationResource:
+  /** 将 Operation 放入 FlinkOperation.spec.operation，保留 requestId 标签用于查询。 */
   def render(operation: Operation, resourceVersion: Option[String] = None): String =
     val metadata = ujson.Obj(
       "name" -> operation.id.operationIdValue,

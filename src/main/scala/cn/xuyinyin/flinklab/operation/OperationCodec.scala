@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 
+/** Operation 编解码器：在领域事件和 FlinkOperation CR 的 JSON 之间保持可审计的双向转换。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
@@ -7,11 +8,13 @@ import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import java.time.Instant
 
 object OperationCodec:
+  /** 把操作和事件历史编码成 FlinkOperation CR 内部的 operation JSON。 */
   def json(operation: Operation): String =
     val value = operation.json
     value("command") = commandJson(operation.command)
     value.render()
 
+  /** 从持久化 JSON 恢复操作；任何结构错误都以 Left 返回。 */
   def fromJson(raw: String): Either[String, Operation] =
     try
       val value = ujson.read(raw)
@@ -107,6 +110,7 @@ object OperationCodec:
       fallback = string(value, "fallback").flatMap(value => scala.util.Try(FallbackPolicy.valueOf(value)).toOption).getOrElse(FallbackPolicy.Forbidden)
     yield UpgradePolicy(protection, fallback)
 
+  // 事件解码必须覆盖所有状态机事件，否则重启恢复会丢失生命周期语义。
   private def eventValue(value: ujson.Value): Either[String, OperationEvent] =
     val obj = value.obj
     for at <- string(obj, "at").toRight("event.at is required").flatMap(parseInstant); eventType <- string(obj, "type").toRight("event.type is required") yield eventType match

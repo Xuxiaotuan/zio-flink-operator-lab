@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.operator.observer
 
+/** 资源观察器：执行 list → watch，处理 resourceVersion、410 Gone 重列和断线重连。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.{KubernetesApi, KubernetesApiError}
@@ -19,6 +20,7 @@ final case class ResourceObservation(
     payload: String
 )
 
+/** 将 list/watch 事件转换成统一的资源观察流。 */
 trait ResourceObserver:
   def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]): ZStream[Any, Throwable, ResourceObservation]
 
@@ -26,10 +28,13 @@ object ResourceObserver:
   def live(api: KubernetesApi): ResourceObserver = new DefaultResourceObserver(api)
 
 final class DefaultResourceObserver(api: KubernetesApi) extends ResourceObserver:
+  /** 每个 cycle 先 list 获取快照和 resourceVersion，再从该版本开始 watch。 */
   override def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]): ZStream[Any, Throwable, ResourceObservation] =
+    // cycle 是可重入的：410 重新 list，正常断线从新的 list 继续。
     def cycle: ZStream[Any, Throwable, ResourceObservation] =
       ZStream.unwrap {
         api.list(namespace, kind).map(parseList(_, kind)).map { listed =>
+          // 先发出 list 快照，再消费从该 resourceVersion 开始的增量事件。
           val initial = ZStream.fromChunk(Chunk.fromIterable(listed.items.filter(item => name.forall(_ == item.name))))
           val watched = api.watchFrom(namespace, kind, name, listed.resourceVersion)
             .mapZIO {
@@ -38,7 +43,9 @@ final class DefaultResourceObserver(api: KubernetesApi) extends ResourceObserver
             }
             .collectSome
             .catchAll {
+              // 410 表示游标过期，必须重新 list；不能拿旧 resourceVersion 重试。
               case error: KubernetesApiError if error.status == 410 => cycle
+              // 临时错误让本轮流结束，由 reconnect 重新建立 list/watch。
               case error: KubernetesApiError if error.status == 429 || error.status >= 500 => ZStream.empty
               case _: java.io.IOException => ZStream.empty
               case error => ZStream.fail(error)

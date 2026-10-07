@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.operator.observer
+/** 验证 list/watch、resourceVersion 和 410 relist 观察协议。 */
 
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace

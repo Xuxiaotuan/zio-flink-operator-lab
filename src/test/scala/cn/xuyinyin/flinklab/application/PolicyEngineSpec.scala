@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.application
+/** 验证状态保护、savepoint、last-state 和回退策略的组合约束。 */
 
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*

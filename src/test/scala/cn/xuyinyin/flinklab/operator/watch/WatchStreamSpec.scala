@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.operator.watch
+/** 验证 ZStream watch 的重试、重连、reducer 和错误传播。 */
 
 import zio.*
 import zio.stream.*

@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.operation
+/** 验证内存 OperationStore 的幂等、状态推进和资源互斥。 */
 
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*

@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.operation
+/** 验证异步 worker 的提交、观察、验证、恢复和 FallbackDetected 生命周期。 */
 
 import cn.xuyinyin.flinklab.application.DefaultVerificationEngine
 import cn.xuyinyin.flinklab.cli.ResourceKind

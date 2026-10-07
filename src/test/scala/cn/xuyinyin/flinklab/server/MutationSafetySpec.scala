@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.server
+/** 验证 dry-run、幂等、字段白名单和危险变更不会绕过 worker。 */
 
 import cn.xuyinyin.flinklab.application.FlinkOperationFactory
 import cn.xuyinyin.flinklab.cli.ResourceKind

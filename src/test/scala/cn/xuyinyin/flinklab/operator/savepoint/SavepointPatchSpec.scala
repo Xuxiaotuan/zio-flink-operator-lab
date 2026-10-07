@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.operator.savepoint
+/** 验证 savepoint 和 suspend patch 的最小字段与 Long nonce 精度。 */
 
 import zio.test.*
 

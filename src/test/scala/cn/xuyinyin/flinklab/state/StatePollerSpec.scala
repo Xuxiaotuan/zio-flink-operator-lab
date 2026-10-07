@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.state
+/** 验证轮询器合并多种 Flink CR 并检查轮询间隔配置。 */
 
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.FakeKubernetesApi

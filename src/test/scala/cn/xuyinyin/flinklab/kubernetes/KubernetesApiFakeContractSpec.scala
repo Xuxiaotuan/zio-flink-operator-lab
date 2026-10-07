@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.kubernetes
+/** 验证业务调用经过 KubernetesApi 端口时使用正确的资源、路径和请求体。 */
 
 import cn.xuyinyin.flinklab.cli.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace

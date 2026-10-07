@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.state
+/** 验证 Kubernetes/PostgreSQL 状态后端配置和 resourceVersion 合并规则。 */
 
 import zio.test.*
 

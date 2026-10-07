@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.kubernetes
 
+/** Kubernetes API 端口和生产适配器：所有 Flink CR 的读写、watch、重试都从这里进入 Kubernetes API Server。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.domain.{ResourceUid, resourceUidValue}
@@ -12,7 +13,9 @@ import okhttp3.{MediaType, RequestBody}
 import zio.*
 import zio.stream.*
 
+/** Kubernetes 副作用端口；业务层只依赖这个抽象，不直接依赖 Java Client。 */
 trait KubernetesApi:
+  /** 用 server-side apply 创建或更新一个 CR；dryRun 只返回 API Server 预览。 */
   def apply(namespace: Namespace, resource: String, dryRun: Boolean): IO[Throwable, String]
   def create(namespace: Namespace, resource: String): IO[Throwable, String] =
     ZIO.fail(UnsupportedOperationException("create is not implemented by this KubernetesApi"))
@@ -24,6 +27,7 @@ trait KubernetesApi:
   def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String): IO[Throwable, String]
   def watch(namespace: Namespace, kind: ResourceKind, name: String): ZStream[Any, Throwable, WatchEvent] =
     watchFrom(namespace, kind, Some(name), None)
+  /** 从指定 resourceVersion 开始 watch；resourceVersion 始终作为不透明字符串传递。 */
   def watchFrom(namespace: Namespace, kind: ResourceKind, name: Option[String], resourceVersion: Option[String]): ZStream[Any, Throwable, WatchEvent] =
     watch(namespace, kind, name.getOrElse(""))
 
@@ -103,6 +107,7 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
       contentType = "application/merge-patch+json"
     )
 
+  /** 将 Java Watch 转成受 Scope 管理的 ZStream，流结束时关闭底层连接。 */
   override def watchFrom(namespace: Namespace, kind: ResourceKind, name: Option[String], resourceVersion: Option[String]): ZStream[Any, Throwable, WatchEvent] =
     ZStream.unwrapScoped {
       ZIO.acquireRelease(
@@ -118,6 +123,7 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
             )
           name.foreach(value => builder.fieldSelector(s"metadata.name=$value"))
           resourceVersion.foreach(value => builder.resourceVersion(value))
+          // allowWatchBookmarks 让服务能收到游标进展，但 bookmark 不会进入业务状态。
           val call = builder.allowWatchBookmarks(true).watch(true).buildCall(null)
           val responseType = new TypeToken[Watch.Response[Object]]() {}.getType
           (client, Watch.createWatch[Object](client, call, responseType))
@@ -181,6 +187,7 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
   private def dryRunQuery(dryRun: Boolean): Map[String, String] =
     if dryRun then Map("dryRun" -> "All") else Map.empty
 
+  /** 统一处理 HTTP 请求、响应关闭和仅对可重试错误的指数退避。 */
   private def request(
       method: String,
       path: String,
@@ -214,10 +221,12 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
       val response = apiClient.getHttpClient.newCall(request).execute()
       try
         val responseBody = Option(response.body()).map(_.string()).getOrElse("")
+        // 非 2xx 统一转成 KubernetesApiError，下面的 retry 只按状态码分类。
         if response.isSuccessful then responseBody
         else throw KubernetesApiError(response.code(), responseBody)
       finally response.close()
     }
+    // 429/5xx/网络中断可重试，4xx 权限或参数错误必须立即返回。
     effect.retry((Schedule.exponential(50.millis) && Schedule.recurs(settings.maxRetries)).whileInput(isRetryable))
 
   private def isRetryable(error: Throwable): Boolean =

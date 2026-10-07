@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.domain
+/** 验证 FlinkDeployment、FlinkStateSnapshot 和 opaque type 的资源渲染。 */
 
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import zio.test.*

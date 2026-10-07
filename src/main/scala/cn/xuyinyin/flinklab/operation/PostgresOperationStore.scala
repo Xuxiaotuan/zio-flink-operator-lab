@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 
+/** PostgreSQL OperationStore：把操作和完整事件链持久化到 PostgreSQL，供多个服务副本共享。 */
 import cn.xuyinyin.flinklab.domain.*
 import zio.*
 
@@ -32,6 +33,7 @@ object OperationStoreSettings:
     yield settings
 
 final class PostgresOperationStore(settings: OperationStoreSettings) extends OperationStore:
+  /** 建表并补齐 request_id 唯一索引；初始化可重复执行。 */
   override def initialize: IO[Throwable, Unit] =
     ZIO.attemptBlocking {
       withConnection { connection =>
@@ -63,11 +65,13 @@ final class PostgresOperationStore(settings: OperationStoreSettings) extends Ope
       case error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
     }
 
+  /** 使用 SELECT FOR UPDATE 串行化同一 operation 的事件推进。 */
   override def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation] =
     ZIO.attemptBlocking {
       withConnection { connection =>
         connection.setAutoCommit(false)
         try
+          // 行锁保证两个副本不会同时基于同一旧事件生成不同 next operation。
           val select = connection.prepareStatement(s"SELECT operation_json FROM ${settings.table} WHERE operation_id = ? FOR UPDATE")
           val current = try
             select.setString(1, id.operationIdValue)

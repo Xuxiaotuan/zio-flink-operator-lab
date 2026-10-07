@@ -1,7 +1,9 @@
 package cn.xuyinyin.flinklab.domain
 
+/** 领域边界类型：用 opaque type 区分 namespace、资源名、UID、resourceVersion 和快照路径。 */
 object FlinkTypes:
 
+  /** Kubernetes namespace；不允许在领域层误传普通字符串。 */
   opaque type Namespace = String
   object Namespace:
     def from(value: String): Either[String, Namespace] =
@@ -10,6 +12,7 @@ object FlinkTypes:
   extension (value: Namespace)
     def namespaceValue: String = value
 
+  /** Kubernetes 资源名；格式校验集中在构造函数。 */
   opaque type DeploymentName = String
   object DeploymentName:
     def from(value: String): Either[String, DeploymentName] =
@@ -20,6 +23,7 @@ object FlinkTypes:
   extension (value: DeploymentName)
     def nameValue: String = value
 
+  /** Flink Job JAR 地址，支持 local:/// 或绝对 URI。 */
   opaque type JobJarUri = String
   object JobJarUri:
     def from(value: String): Either[String, JobJarUri] =

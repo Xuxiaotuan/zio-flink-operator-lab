@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 
+/** 异步操作 worker：负责操作生命周期、锁、提交、观察、验证、超时和故障恢复。 */
 import cn.xuyinyin.flinklab.application.{DefaultPolicyEngine, DefaultVerificationEngine, Evidence, PolicyEngine, VerificationEngine}
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
@@ -10,6 +11,7 @@ import zio.*
 
 import java.time.Instant
 
+/** 异步操作入口；submit 只接受请求，process 负责推进生命周期。 */
 trait AsyncOperationWorker:
   def submit(requestId: RequestId, operation: FlinkOperation): IO[ControlPlaneError, AcceptedOperation]
   def process(id: OperationId): IO[ControlPlaneError, Operation]
@@ -34,6 +36,7 @@ final class DefaultAsyncOperationWorker(
   private val controlPlane = new DefaultFlinkControlPlane(store)
   private val verificationTimeout = sys.env.get("ZIO_FLINK_VERIFICATION_TIMEOUT_SECONDS").flatMap(_.toLongOption).filter(_ > 0).getOrElse(180L).seconds
 
+  /** 创建幂等 operation，并按配置异步排队或启动后台 fiber。 */
   override def submit(requestId: RequestId, operation: FlinkOperation): IO[ControlPlaneError, AcceptedOperation] =
     for
       accepted <- controlPlane.accept(requestId, operation)
@@ -42,23 +45,30 @@ final class DefaultAsyncOperationWorker(
         case None => process(accepted.operationId).forkDaemon.unit
     yield accepted
 
+  /** 进程内互斥只保护本副作用；跨副本一致性由 OperationStore 和资源锁保证。 */
   override def process(id: OperationId): IO[ControlPlaneError, Operation] = mutex.withPermit {
     for
       current <- getRequired(id)
       completed <- current.state match
         case OperationState.Accepted =>
+          // 第一次处理必须先写入 VALIDATION_STARTED，再获取资源租约。
           for
             claimed <- transition(id, OperationEvent.ValidationStarted(Instant.now()))
             result <- coordinator.withLock(claimed.resource, id)(runOperation(id, claimed))
           yield result
-        case OperationState.Validating => coordinator.withLock(current.resource, id)(runOperation(id, current))
-        case OperationState.Submitted | OperationState.WaitingForObservation | OperationState.Reconciling | OperationState.Verifying => coordinator.withLock(current.resource, id)(resumeOperation(id, current))
+        case OperationState.Validating =>
+          // 进程在校验阶段重启时可以安全继续，因为还没有重新提交资源。
+          coordinator.withLock(current.resource, id)(runOperation(id, current))
+        case OperationState.Submitted | OperationState.WaitingForObservation | OperationState.Reconciling | OperationState.Verifying =>
+          // 已提交阶段绝不能再次 apply；只恢复观察和验证。
+          coordinator.withLock(current.resource, id)(resumeOperation(id, current))
         case _ => ZIO.succeed(current)
     yield completed
   }.catchAll { error =>
     terminalize(id, error) *> ZIO.fail(error)
   }
 
+  // Pod 重启或重复投递时，从已持久化的事件阶段恢复，而不是重新提交资源。
   private def resumeOperation(id: OperationId, current: Operation): IO[ControlPlaneError, Operation] =
     for
       _ <- current.state match
@@ -71,23 +81,27 @@ final class DefaultAsyncOperationWorker(
         case _ => ZIO.unit
       target = observationTarget(id, current)
       expectedGeneration = current.events.collect { case OperationEvent.Submitted(_, generation, _, _) => generation }.lastOption.flatten
+      // 继续使用提交时记录的 generation，避免旧版本 READY 被误认成当前操作成功。
       evidence <- awaitVerification(current.command, target, expectedGeneration)
       _ <- transition(id, OperationEvent.Observed(Instant.now(), evidence.observedGeneration))
       _ <- recordFallback(id, current, evidence)
       result <- transition(id, OperationEvent.VerificationSucceeded(Instant.now(), Some(evidence.audit("recovered verification"))))
     yield result
 
+  // 新 operation 的标准顺序：观察 -> 策略校验 -> 提交 -> 观察 -> 证据验证。
   private def runOperation(id: OperationId, current: Operation): IO[ControlPlaneError, Operation] =
     for
       observed <- currentObservation(current)
       validated <- policy.validate(current.command, observed)
       _ <- transition(id, OperationEvent.ValidationPassed(Instant.now()))
+      // 只有策略验证通过后才允许对 Kubernetes 产生写副作用。
       response <- submitToKubernetes(id, validated.operation).mapError(submissionError)
       responseMetadata = metadata(response)
       _ <- transition(id, OperationEvent.Submitted(Instant.now(), responseMetadata._1, responseMetadata._2, responseMetadata._3))
       _ <- transition(id, OperationEvent.WaitingForObservation(Instant.now()))
       completed <- current.command match
         case FlinkOperation.Delete(_, _) =>
+          // 删除的成功证据是 Deleted 事件，或确认 UID 已被新对象替换。
           for
             _ <- transition(id, OperationEvent.VerificationStarted(Instant.now()))
             deleteTarget = validated.operation match
@@ -105,6 +119,7 @@ final class DefaultAsyncOperationWorker(
             expectedGeneration = current.command match
               case FlinkOperation.Snapshot(_, _) => None
               case _ => metadata(response)._1
+            // 快照依靠 Snapshot CR 的 UID/状态/路径，普通变更依靠 generation。
             evidence <- awaitVerification(current.command, target, expectedGeneration)
             _ <- transition(id, OperationEvent.Observed(Instant.now(), evidence.observedGeneration))
             _ <- recordFallback(id, current, evidence)
@@ -139,11 +154,13 @@ final class DefaultAsyncOperationWorker(
     ObservedJobState(resource, evidence.jobState, evidence.reconciliation, evidence.generation, evidence.observedGeneration, evidence.savepointDirectory, evidence.snapshotPath)
 
   private def awaitVerification(operation: FlinkOperation, target: ResourceRef, expectedGeneration: Option[Generation]): IO[ControlPlaneError, Evidence] =
+    // 验证流会跳过“证据暂缺”的中间状态，只在明确成功或确定失败时停止。
     observer.observe(target.namespace, target.kind, Some(target.name.nameValue))
       .map(observation => Evidence.fromObservation(target.namespace, observation))
       .map { evidence =>
         verifier.verify(operation, target, evidence, expectedGeneration) match
           case Right(result) => Some(Right(result.evidence))
+          // Job FAILED、Operator ERROR 等不可恢复状态立即结束等待。
           case Left(error) if deterministicFailure(evidence) => Some(Left(error))
           case Left(_) => None
       }

@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.application
+/** 验证 CLI/HTTP 输入能否转换为统一的 FlinkOperation，以及非法字段是否被拒绝。 */
 
 import cn.xuyinyin.flinklab.cli.{Command, ResourceKind}
 import cn.xuyinyin.flinklab.domain.FlinkOperation

@@ -1,5 +1,7 @@
 package cn.xuyinyin.flinklab.cli
 
+/** CLI 命令模型和解析器：把字符串参数解析成类型化命令，并拒绝未知或不完整的选项。 */
+/** 控制面支持的 Flink 自定义资源种类。 */
 enum ResourceKind:
   case Deployment, SessionJob, StateSnapshot, Operation, OperationLock
 
@@ -44,6 +46,7 @@ object Command:
   final case class Status(kind: ResourceKind, options: Map[String, String]) extends Command
   final case class Delete(kind: ResourceKind, options: Map[String, String]) extends Command
 
+  /** 解析完整命令行；失败时返回面向用户的错误，而不是抛异常。 */
   def parse(args: List[String]): Either[String, Command] =
     args match
       case Nil | "help" :: Nil | "--help" :: Nil => Right(Help)
@@ -68,6 +71,7 @@ object Command:
 
   private final case class ParsedOptions(values: Map[String, String], dryRun: Boolean)
 
+  // 先把 --key value 解析成无序选项，再由 validate 按动作检查允许集合。
   private def parseOptions(tokens: List[String]): Either[String, ParsedOptions] =
     def loop(rest: List[String], values: Map[String, String], dryRun: Boolean): Either[String, ParsedOptions] =
       rest match

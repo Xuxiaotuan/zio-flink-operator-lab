@@ -1,11 +1,13 @@
 package cn.xuyinyin.flinklab.application
 
+/** 应用层命令工厂：把 CLI/HTTP 输入转换成统一的 FlinkOperation，确保不同入口共享同一套校验和执行协议。 */
 import cn.xuyinyin.flinklab.cli.{Command, ResourceKind}
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 
 /** Converts every external command into the same typed domain operation. */
 object FlinkOperationFactory:
+  /** CLI 入口统一转换为领域操作，后续由 worker 执行。 */
   def fromCommand(command: Command): Either[String, FlinkOperation] = command match
     case Command.Apply(kind, options, _) =>
       kind match
@@ -24,6 +26,7 @@ object FlinkOperationFactory:
       for target <- targetFromOptions(options); policy <- upgradePolicyFromOptions(options) yield FlinkOperation.Restart(target, policy)
     case _ => Left("only apply commands produce a FlinkOperation")
 
+  /** 解析 HTTP 提交的 FlinkDeployment，并拒绝未声明的字段。 */
   def fromDeploymentJson(namespace: String, raw: String): Either[String, FlinkOperation] =
     for
       value <- read(raw)
@@ -57,6 +60,7 @@ object FlinkOperationFactory:
       podTemplate <- spec.get("podTemplate").map(value => value.objOpt.map(entries => ujson.Obj.from(entries)).toRight("deployment.spec.podTemplate must be an object").map(Some(_))).getOrElse(Right(None))
     yield FlinkOperation.Deploy(FlinkDeploymentSpec(resolvedNamespace, resolvedName, image, flinkVersion, FlinkJob(jar, entryClass, parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState), serviceAccount, flinkConfiguration.get("state.savepoints.dir"), flinkConfiguration, jobManagerResources, taskManagerResources, podTemplate))
 
+  /** 解析快照请求；快照同样先变成 FlinkOperation 再进入 worker。 */
   def fromSnapshotJson(namespace: String, raw: String): Either[String, FlinkOperation] =
     for
       value <- read(raw)
@@ -67,6 +71,7 @@ object FlinkOperationFactory:
       resolvedNamespace <- Namespace.from(namespace)
     yield FlinkOperation.Snapshot(ResourceRef(resolvedNamespace, targetKind, targetName), SnapshotPolicy(snapshotType, snapshotName))
 
+  // CLI 选项和环境变量只在边界层读取，进入领域模型后不再依赖环境。
   private def deploymentFromOptions(options: Map[String, String]): Either[String, FlinkDeploymentSpec] =
     for
       namespace <- Namespace.from(options.getOrElse("namespace", sys.env.getOrElse("FLINK_NAMESPACE", "default")))
@@ -99,6 +104,7 @@ object FlinkOperationFactory:
       name <- DeploymentName.from(options.getOrElse("name", "word-count"))
     yield ResourceRef(namespace, ResourceKind.Deployment, name)
 
+  // upgrade-mode 与 fallback 必须组合校验，避免产生互相矛盾的策略。
   private def upgradePolicyFromOptions(options: Map[String, String]): Either[String, UpgradePolicy] =
     for
       protection <- StateProtection.parse(options.getOrElse("upgrade-mode", "stateless"))

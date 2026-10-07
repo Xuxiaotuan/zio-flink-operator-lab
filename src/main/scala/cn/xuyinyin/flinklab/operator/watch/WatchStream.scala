@@ -1,10 +1,13 @@
 package cn.xuyinyin.flinklab.operator.watch
 
+/** watch 流工具：提供重试、重连和把事件折叠成最新状态的 ZStream 操作。 */
 import zio.*
 import zio.stream.*
 
+/** watch 的重试上限和退避策略。 */
 final case class RetryPolicy(maxRetries: Int, initialDelay: Duration, shouldRetry: Throwable => Boolean = _ => true)
 
+/** ZStream 重试/重连组合器。 */
 object Retrying:
   def stream[A](source: => ZStream[Any, Throwable, A], policy: RetryPolicy): ZStream[Any, Throwable, A] =
     val schedule = (Schedule.exponential(policy.initialDelay) && Schedule.recurs(policy.maxRetries)).whileInput(policy.shouldRetry)
@@ -13,6 +16,7 @@ object Retrying:
   def reconnect[A](source: => ZStream[Any, Throwable, A], policy: RetryPolicy): ZStream[Any, Throwable, A] =
     source.repeat(Schedule.spaced(policy.initialDelay) && Schedule.recurs(policy.maxRetries))
 
+  /** 先对一次连接重试，再在连接完成后按间隔重连。 */
   def resilient[A](source: => ZStream[Any, Throwable, A], policy: RetryPolicy): ZStream[Any, Throwable, A] =
     stream(source, policy).repeat(Schedule.spaced(policy.initialDelay))
 

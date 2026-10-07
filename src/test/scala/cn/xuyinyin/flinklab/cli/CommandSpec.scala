@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.cli
+/** 验证命令行语法、选项值和 dry-run 边界。 */
 
 import zio.test.*
 

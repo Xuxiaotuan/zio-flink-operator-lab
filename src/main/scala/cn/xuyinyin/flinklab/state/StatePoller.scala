@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.state
 
+/** 状态轮询器：定期读取 Kubernetes CR，并把最新状态合并到选定的共享状态后端。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
@@ -31,6 +32,7 @@ object StatePoller:
       }
     }
 
+  /** 单轮读取三类 Flink CR，并以 resourceVersion 合并进共享状态。 */
   def pollOnce(api: KubernetesApi, store: StateStore, namespace: Namespace): IO[Throwable, Unit] =
     for
       records <- ZIO.foreach(kinds) { kind =>

@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.server
 
+/** HTTP 控制面：将外部请求路由为查询或类型化 FlinkOperation，变更请求统一交给 AsyncOperationWorker。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
@@ -11,6 +12,7 @@ import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.operation.{AcceptedOperation, AsyncOperationWorker, OperationStore}
 import zio.*
 
+/** HTTP 请求的最小内部表示，便于路由层脱离具体 Web Server。 */
 final case class ApiRequest(
     method: String,
     path: String,
@@ -18,6 +20,7 @@ final case class ApiRequest(
     body: String = ""
 )
 
+/** HTTP 响应模型，测试和真实 HttpServer 共用。 */
 final case class ApiResponse(status: Int, body: String, contentType: String = "application/json")
 
 final case class KubernetesHttpSettings(
@@ -34,6 +37,7 @@ object KubernetesHttpSettings:
 
 /** Stateless HTTP facade. Every mutating operation still goes through KubernetesApi. */
 object KubernetesHttpApi:
+  /** 无 worker 的查询/直接 CR 路由，变更 worker 路由通过 handleWith 重载进入。 */
   def handle(request: ApiRequest, settings: KubernetesHttpSettings = KubernetesHttpSettings()): ZIO[KubernetesApi & StateStore, Nothing, ApiResponse] =
     route(request, settings).catchAll(error => ZIO.succeed(errorResponse(error)))
 
@@ -46,6 +50,7 @@ object KubernetesHttpApi:
   def handleWith(api: KubernetesApi, store: StateStore, worker: AsyncOperationWorker, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
     routeWithWorker(request, settings, worker, None).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
 
+  /** 生产入口：同时注入状态存储、operation store 和异步 worker。 */
   def handleWith(api: KubernetesApi, store: StateStore, operationStore: OperationStore, worker: AsyncOperationWorker, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
     routeWithWorker(request, settings, worker, Some(operationStore)).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
 
@@ -59,9 +64,11 @@ object KubernetesHttpApi:
       case Some("false") | None => routeWithWorkerMutation(request, settings, worker, operationStore)
       case Some(value) => ZIO.fail(IllegalArgumentException(s"dryRun must be true or false, got: $value"))
 
+  // 所有 HTTP 变更在这里先解析成 FlinkOperation，再交给同一个 worker。
   private def routeWithWorkerMutation(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
       case ("POST", "v1" :: "deployments" :: Nil) =>
+        // 创建/更新部署统一生成 FlinkOperation，不直接 apply CR。
         for
           resource <- parseJson(request.body)
           namespace <- namespaceFor(resource, request.query, settings)
@@ -70,6 +77,7 @@ object KubernetesHttpApi:
           accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
         yield acceptedResponse(accepted, 202)
       case ("POST", "v1" :: "snapshots" :: Nil) =>
+        // 快照也使用同一套 requestId、锁和验证协议。
         for
           body <- parseJson(request.body)
           namespace <- namespaceFrom(request.query, settings)
@@ -127,6 +135,7 @@ object KubernetesHttpApi:
           accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
         yield acceptedResponse(accepted, 202)
       case ("GET", "v1" :: "operations" :: id :: Nil) =>
+        // operation 查询只读持久化 store，不触发 worker 或 Kubernetes 副作用。
         operationStore match
           case None => ZIO.succeed(ApiResponse(503, errorJson("operation store is not configured")))
           case Some(store) =>
@@ -136,11 +145,13 @@ object KubernetesHttpApi:
             yield operation.map(value => ok(value.json.render())).getOrElse(ApiResponse(404, errorJson("operation not found")))
       case _ => route(request, settings)
 
+  // 没有显式 requestId 时生成一次性幂等键；客户端重试应主动复用 requestId。
   private def requestId(request: ApiRequest): RequestId = RequestId.from(request.query.getOrElse("requestId", java.util.UUID.randomUUID().toString)).fold(_ => RequestId.generate(), identity)
 
   private def acceptedResponse(accepted: AcceptedOperation, status: Int): ApiResponse =
     ApiResponse(status, ujson.Obj("operationId" -> accepted.operationId.operationIdValue, "requestId" -> accepted.requestId.requestIdValue, "state" -> "ACCEPTED", "acceptedAt" -> accepted.acceptedAt.toString).render())
 
+  /** 查询、dry-run 和兼容的直接 CR 路由。真正变更请求由上面的 worker 路由优先处理。 */
   private def route(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
       case ("GET", "healthz" :: Nil) | ("GET", "readyz" :: Nil) =>
@@ -317,6 +328,7 @@ object KubernetesHttpApi:
         case None => ZIO.succeed(ApiResponse(404, errorJson("state record not found")))
     yield response
 
+  /** 兼容旧 savepoint 接口；新变更路径仍通过 worker 创建 Snapshot operation。 */
   private def savepoint(
       request: ApiRequest,
       settings: KubernetesHttpSettings,
@@ -402,6 +414,7 @@ object KubernetesHttpApi:
   private def persist(store: StateStore, record: StateRecord): IO[Throwable, Unit] =
     store.getJournal(record.key).flatMap(previous => store.putJournal(StateJournal.merge(previous, record)))
 
+  // 只补默认 namespace/savepoint 目录，不修改调用方明确提供的字段。
   private def prepareResource(resource: ujson.Value, namespace: Namespace, directory: Option[String]): String =
     val metadata = resource.obj.get("metadata").map(_.obj).getOrElse {
       val created = ujson.Obj()

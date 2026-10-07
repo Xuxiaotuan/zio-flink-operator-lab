@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.operator
 
+/** CLI 执行器：渲染资源、提交 CR、发送 savepoint 请求、读取状态或启动 watch。 */
 import cn.xuyinyin.flinklab.cli.{Command, ResourceKind}
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
@@ -12,6 +13,7 @@ import zio.*
 
 object OperatorProgram:
 
+  /** 执行只读/直接 CLI 命令；需要生命周期跟踪的变更转交 worker。 */
   def execute(command: Command): ZIO[KubernetesApi, Throwable, Unit] =
     command match
       case Command.Help => Console.printLine(help)
@@ -136,6 +138,7 @@ object OperatorProgram:
   private def acceptedJson(accepted: cn.xuyinyin.flinklab.operation.AcceptedOperation): String =
     ujson.Obj("operationId" -> accepted.operationId.operationIdValue, "requestId" -> accepted.requestId.requestIdValue, "state" -> "ACCEPTED", "acceptedAt" -> accepted.acceptedAt.toString).render()
 
+  /** 统一把 CLI 变更命令送入 typed operation worker。 */
   def executeWithWorker(command: Command): ZIO[KubernetesApi & AsyncOperationWorker, Throwable, Unit] = command match
     case Command.Apply(_, _, false) | Command.Upgrade(_, _) | Command.Resume(_, _) | Command.Restart(_, _) =>
       FlinkOperationFactory.fromCommand(command) match

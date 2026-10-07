@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.operator.watch
+/** 验证 Flink 状态、checkpoint、savepoint 和 watch 事件解析。 */
 
 import zio.test.*
 

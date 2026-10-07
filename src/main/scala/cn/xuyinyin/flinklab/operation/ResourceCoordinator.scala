@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 
+/** 资源互斥协调器：通过 FlinkOperationLock CR 为同一 Flink 资源建立可续租、可接管的租约。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
@@ -8,21 +9,25 @@ import zio.*
 
 import java.time.{Duration, Instant}
 
+/** 为同一资源的变更提供互斥执行边界。 */
 trait ResourceCoordinator:
   def withLock[A](resource: ResourceRef, operationId: OperationId)(effect: IO[ControlPlaneError, A]): IO[ControlPlaneError, A]
 
 object InMemoryResourceCoordinator extends ResourceCoordinator:
+  /** 获取租约、后台续租，副作用结束后按 UID 释放，避免误删新持有者的锁。 */
   override def withLock[A](resource: ResourceRef, operationId: OperationId)(effect: IO[ControlPlaneError, A]): IO[ControlPlaneError, A] = effect
 
 final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCoordinator:
   private val leaseDuration = Duration.ofSeconds(sys.env.get("ZIO_FLINK_LOCK_LEASE_SECONDS").flatMap(_.toLongOption).getOrElse(120L).max(1L))
   private val renewInterval = Duration.ofMillis((leaseDuration.toMillis / 3L).max(1000L))
 
+  /** 获取租约、后台续租，副作用结束后按 UID 释放，避免误删新持有者的锁。 */
   override def withLock[A](resource: ResourceRef, operationId: OperationId)(effect: IO[ControlPlaneError, A]): IO[ControlPlaneError, A] =
     val lockName = lockNameFor(resource)
     acquire(resource, operationId, lockName).flatMap { lock =>
       for
         current <- Ref.make(lock)
+        // renew 与 effect 竞速；续租失败会中断副作用，避免失去所有权后继续操作。
         result <- renew(resource.namespace, lockName, current).forever.raceFirst(effect).ensuring(release(resource.namespace, lockName, lock.uid))
       yield result
     }
@@ -30,6 +35,7 @@ final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCo
   private final case class LockLease(uid: Option[ResourceUid], resourceVersion: Option[String])
   private final case class ExistingLock(uid: Option[ResourceUid], expiresAt: Instant)
 
+  // 创建冲突时只接管已过期的锁；活跃锁直接返回 ResourceBusy。
   private def acquire(resource: ResourceRef, operationId: OperationId, lockName: DeploymentName): IO[ControlPlaneError, LockLease] =
     createLock(resource, operationId, lockName).either.flatMap {
       case Right(lock) => ZIO.succeed(lock)
@@ -58,6 +64,7 @@ final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCo
     api.create(resource.namespace, render(resource, operationId, lockName, leaseUntil))
       .map(raw => LockLease(metadataUid(raw), metadataResourceVersion(raw)))
 
+  // 续租 patch 带上 UID/resourceVersion，锁已被接管时会触发错误而停止副作用。
   private def renew(namespace: Namespace, lockName: DeploymentName, current: Ref[LockLease]): IO[ControlPlaneError, Unit] =
     (ZIO.sleep(zio.Duration.fromMillis(renewInterval.toMillis)) *>
       current.get.flatMap { lease =>

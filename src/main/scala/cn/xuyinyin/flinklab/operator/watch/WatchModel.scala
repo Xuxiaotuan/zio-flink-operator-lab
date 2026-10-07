@@ -1,9 +1,11 @@
 package cn.xuyinyin.flinklab.operator.watch
 
+/** Kubernetes watch 状态模型：解析 FlinkDeployment/FlinkSessionJob/FlinkStateSnapshot 的状态和事件。 */
 import ujson.*
 
 import scala.util.Try
 
+/** Kubernetes watch 的五种事件类型。 */
 enum WatchEventType:
   case Added, Modified, Deleted, Bookmark, Error
 
@@ -106,6 +108,7 @@ final case class SavepointStatus(
     result
 
 /** Normalized status of a FlinkDeployment or FlinkSessionJob CR. */
+/** 对 FlinkDeployment/FlinkSessionJob status 的稳定投影。 */
 final case class FlinkStatusSnapshot(
     name: String,
     resourceVersion: Option[String],
@@ -149,6 +152,7 @@ final case class FlinkStatusSnapshot(
     result
 
 object FlinkStatusSnapshot:
+  /** 入口保留解析错误，调用方可以把坏事件记为验证失败。 */
   def fromJsonString(json: String): Either[String, FlinkStatusSnapshot] =
     Try(ujson.read(json)).toEither.left.map(error => Option(error.getMessage).getOrElse(error.toString)).flatMap(fromJson)
 
@@ -228,6 +232,7 @@ object FlinkStatusSnapshot:
 object JsonFields:
   def put(target: Obj, key: String, value: Option[String]): Unit = value.foreach(item => target(key) = item)
 
+/** 对 FlinkStateSnapshot status 的稳定投影。 */
 final case class FlinkStateSnapshotStatus(
     name: String,
     resourceVersion: Option[String],
@@ -285,6 +290,7 @@ object FlinkStateSnapshotStatus:
 
   private def stringValue(value: collection.Map[String, Value], key: String): Option[String] = value.get(key).flatMap { item => item.strOpt.orElse(item.numOpt.map(_.toString)) }.filter(_.nonEmpty)
 
+/** 已校验的 watch 事件；非 bookmark/error 事件都必须能解析成对应状态。 */
 final case class WatchEvent(eventType: WatchEventType, resource: Value):
   def snapshot: Either[String, FlinkStatusSnapshot] = FlinkStatusSnapshot.fromJson(resource)
   def stateSnapshot: Either[String, FlinkStateSnapshotStatus] = FlinkStateSnapshotStatus.fromJson(resource)
@@ -303,6 +309,7 @@ object WatchEvent:
       yield event
     }.toEither.left.map(error => Option(error.getMessage).getOrElse(error.toString)).flatten
 
+/** 按事件到达顺序维护当前每个资源的最新状态。 */
 object StatusReducer:
   def merge(current: Map[String, FlinkStatusSnapshot], next: FlinkStatusSnapshot): Map[String, FlinkStatusSnapshot] =
     current.updated(next.name, next)
@@ -313,6 +320,7 @@ object StatusReducer:
       case WatchEventType.Added | WatchEventType.Modified => event.snapshot.map(snapshot => merge(current, snapshot))
       case WatchEventType.Deleted => event.snapshot.map(deleted => current - deleted.name)
 
+/** 快照资源专用 reducer，删除事件会移除对应资源。 */
 object StateSnapshotReducer:
   def merge(current: Map[String, FlinkStateSnapshotStatus], next: FlinkStateSnapshotStatus): Map[String, FlinkStateSnapshotStatus] =
     current.updated(next.name, next)

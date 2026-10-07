@@ -1,4 +1,5 @@
 package cn.xuyinyin.flinklab.application
+/** 验证观察证据、generation 和快照结果路径如何决定操作成功或失败。 */
 
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*

@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.state
 
+/** 状态后端：定义 Kubernetes CR 和 PostgreSQL 两种状态读取/审计存储，并维护有限生命周期历史。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
@@ -8,6 +9,7 @@ import zio.*
 import java.sql.{Connection, DriverManager, ResultSet}
 import java.time.Instant
 
+/** 状态观测的事实来源；Kubernetes 是默认模式，Postgres 是外置审计模式。 */
 enum StateBackend:
   case Kubernetes, Postgres
 
@@ -75,6 +77,7 @@ final case class StateRecord(
       "payload" -> ujson.read(payload)
     )
 
+/** 资源最新状态加有限生命周期历史；历史只记录状态变化和删除。 */
 final case class StateJournal(
     key: StateKey,
     resourceVersion: Option[String],
@@ -103,6 +106,7 @@ object StateJournal:
   def fromRecord(record: StateRecord): StateJournal =
     merge(None, record)
 
+  /** 相同 status 不重复扩张历史，避免轮询把数据库写成无限增长日志。 */
   def merge(previous: Option[StateJournal], record: StateRecord): StateJournal =
     val nextStatus = statusPayload(record.payload)
     val changed = previous.forall(previousJournal => statusPayload(previousJournal.payload) != nextStatus)
@@ -175,6 +179,7 @@ object StateRecord:
       }
     }
 
+/** 状态存储端口；Kubernetes 实现直接读 CR，Postgres 实现保存观测投影。 */
 trait StateStore:
   def backend: StateBackend
   def initialize: IO[Throwable, Unit] = ZIO.unit
@@ -187,6 +192,7 @@ trait StateStore:
   def delete(key: StateKey): IO[Throwable, Unit]
 
 /** Kubernetes CRs are the source of truth in this mode; no second cache is introduced. */
+/** Kubernetes 模式不复制缓存，CR 本身就是事实源。 */
 final class KubernetesStateStore(api: KubernetesApi) extends StateStore:
   override val backend: StateBackend = StateBackend.Kubernetes
 
@@ -206,6 +212,7 @@ final class KubernetesStateStore(api: KubernetesApi) extends StateStore:
 
   override def delete(key: StateKey): UIO[Unit] = ZIO.unit
 
+/** PostgreSQL 模式保存最新观测、resourceVersion 和有限生命周期历史。 */
 final class PostgresStateStore(settings: StateStoreSettings) extends StateStore:
   override val backend: StateBackend = StateBackend.Postgres
 
@@ -235,9 +242,11 @@ final class PostgresStateStore(settings: StateStoreSettings) extends StateStore:
       }
     }
 
+  /** 使用 resourceVersion 条件 upsert，防止旧观察覆盖新观察。 */
   override def putJournal(journal: StateJournal): IO[Throwable, Unit] =
     ZIO.attemptBlocking {
       withConnection { connection =>
+        // 只有 resourceVersion 不旧于数据库值时才覆盖，避免多副本轮询乱序回写。
         val sql =
           s"""INSERT INTO ${settings.table}
              |  (namespace, resource_kind, resource_name, resource_version, payload, observed_at, lifecycle_json, deleted)

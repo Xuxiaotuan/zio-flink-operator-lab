@@ -1,13 +1,16 @@
 package cn.xuyinyin.flinklab.application
 
+/** 操作策略校验：在真正写入 Kubernetes 之前检查目标状态、状态保护方式和回退策略。 */
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.ControlPlaneError.*
 import zio.*
 
+/** 在副作用发生前检查操作是否符合当前资源和状态保护策略。 */
 trait PolicyEngine:
   def validate(operation: FlinkOperation, current: Option[ObservedJobState]): IO[ControlPlaneError, ValidatedOperation]
 
 final class DefaultPolicyEngine extends PolicyEngine:
+  /** 校验并规范化操作；返回的操作才允许提交给 Operator。 */
   override def validate(operation: FlinkOperation, current: Option[ObservedJobState]): IO[ControlPlaneError, ValidatedOperation] =
     operation match
       case operation @ FlinkOperation.Upgrade(target, spec, policy) =>

@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.domain
 
+/** 控制面领域模型：定义请求、操作、状态、事件、锁和验证证据等核心类型。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 
@@ -7,6 +8,7 @@ import java.time.Instant
 import java.util.UUID
 
 /** Typed identifiers keep retry, audit and resource identity distinct. */
+/** 客户端幂等键；相同 requestId 只能绑定同一操作。 */
 opaque type RequestId = String
 object RequestId:
   def from(value: String): Either[String, RequestId] =
@@ -15,6 +17,7 @@ object RequestId:
 extension (value: RequestId)
   def requestIdValue: String = value
 
+/** 控制面操作 ID；由 requestId 稳定生成，便于重试后找到同一操作。 */
 opaque type OperationId = String
 object OperationId:
   def from(value: String): Either[String, OperationId] =
@@ -24,6 +27,7 @@ object OperationId:
 extension (value: OperationId)
   def operationIdValue: String = value
 
+/** Kubernetes 对象 UID；删除和锁释放时用于防止误操作新对象。 */
 opaque type ResourceUid = String
 object ResourceUid:
   def from(value: String): Either[String, ResourceUid] =
@@ -31,6 +35,7 @@ object ResourceUid:
 extension (value: ResourceUid)
   def resourceUidValue: String = value
 
+/** Kubernetes resourceVersion；只用于比较/条件更新，业务层不解析其格式。 */
 opaque type ResourceVersion = String
 object ResourceVersion:
   def from(value: String): Either[String, ResourceVersion] =
@@ -38,6 +43,7 @@ object ResourceVersion:
 extension (value: ResourceVersion)
   def resourceVersionValue: String = value
 
+/** Operator generation；用于确认观察到的是本次提交对应的版本。 */
 opaque type Generation = Long
 object Generation:
   def from(value: Long): Either[String, Generation] =
@@ -46,6 +52,7 @@ object Generation:
 extension (value: Generation)
   def generationValue: Long = value
 
+/** RustFS/S3 快照路径；非空即可，具体 URI 语义由 Flink 负责。 */
 opaque type SnapshotPath = String
 object SnapshotPath:
   def from(value: String): Either[String, SnapshotPath] =
@@ -53,6 +60,7 @@ object SnapshotPath:
 extension (value: SnapshotPath)
   def snapshotPathValue: String = value
 
+/** 用户要求的状态保护方式，最终映射到 Operator upgradeMode。 */
 enum StateProtection:
   case Stateless, LastState, Savepoint
 
@@ -136,6 +144,7 @@ enum SuspendPolicy:
 
 final case class SnapshotPolicy(snapshotType: SnapshotType, snapshotName: Option[DeploymentName] = None)
 
+/** 所有入口最终都归一化到这组变更意图。 */
 enum FlinkOperation:
   case Deploy(spec: FlinkDeploymentSpec)
   case Upgrade(target: ResourceRef, spec: FlinkDeploymentSpec, policy: UpgradePolicy)
@@ -145,6 +154,7 @@ enum FlinkOperation:
   case Snapshot(target: ResourceRef, policy: SnapshotPolicy)
   case Delete(target: ResourceRef, policy: DeletePolicy)
 
+/** Operation 的持久化生命周期；状态只能由 OperationStateMachine 推进。 */
 enum OperationState:
   case Accepted
   case Validating
@@ -196,6 +206,7 @@ final case class VerificationEvidence(
     snapshotPath.foreach(current => value("snapshotPath") = current.snapshotPathValue)
     value
 
+/** 可审计事件；事件列表是跨重启恢复 operation 的依据。 */
 enum OperationEvent:
   case Accepted(at: Instant)
   case ValidationStarted(at: Instant)
@@ -215,6 +226,7 @@ enum OperationEvent:
   case Uncertain(at: Instant, reason: String)
 
 object OperationEvent:
+  /** 统一提取事件时间，供 Operation.updatedAt 和排序使用。 */
   def at(event: OperationEvent): Instant = event match
     case Accepted(value)                       => value
     case ValidationStarted(value)              => value
@@ -233,6 +245,7 @@ object OperationEvent:
     case Superseded(value, _)                  => value
     case Uncertain(value, _)                   => value
 
+  /** 将事件编码为持久化 JSON，保留证据和失败原因。 */
   def json(event: OperationEvent): ujson.Obj = event match
     case Accepted(at) => ujson.Obj("type" -> "ACCEPTED", "at" -> at.toString)
     case ValidationStarted(at) => ujson.Obj("type" -> "VALIDATION_STARTED", "at" -> at.toString)
@@ -294,6 +307,7 @@ final case class ValidatedOperation(
     observed: Option[ObservedJobState]
 )
 
+/** 持久化的完整操作记录，包含命令、当前状态和事件历史。 */
 final case class Operation(
     id: OperationId,
     requestId: RequestId,
@@ -316,6 +330,7 @@ final case class Operation(
       "events" -> ujson.Arr(events.map(OperationEvent.json)*),
     )
 
+  /** 只有状态机允许的事件才能写入历史；非法顺序返回 InvalidTransition。 */
   def advance(event: OperationEvent): Either[ControlPlaneError, Operation] =
     OperationStateMachine.next(state, event).map(nextState => copy(state = nextState, events = events :+ event, updatedAt = OperationEvent.at(event)))
 
@@ -325,7 +340,9 @@ object Operation:
     Operation(id, requestId, command, resource, OperationState.Accepted, List(OperationEvent.Accepted(at)), at, at)
 
 object OperationStateMachine:
+  /** 集中定义状态转移，避免 worker、存储实现各自解释生命周期。 */
   def next(state: OperationState, event: OperationEvent): Either[ControlPlaneError, OperationState] =
+    // 每个分支只描述一个合法状态转移；未列出的组合统一变成 InvalidTransition。
     val next = event match
       case OperationEvent.Accepted(_)                  => None
       case OperationEvent.ValidationStarted(_)         => state match

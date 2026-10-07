@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.server
 
+/** HTTP 服务启动器：创建 Java HttpServer、绑定 ZIO 依赖并为每个请求调用控制面路由。 */
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.state.{StatePoller, StateStore}
 import cn.xuyinyin.flinklab.operation.{AsyncOperationWorker, OperationStore}
@@ -21,6 +22,7 @@ object HttpServerSettings:
     )
 
 object ServerProgram:
+  /** 初始化数据库/状态后启动 HTTP Server 与后台状态轮询。 */
   def run: ZIO[KubernetesApi & StateStore & AsyncOperationWorker & OperationStore, Throwable, Unit] =
     ZIO.scoped {
       for
@@ -40,6 +42,7 @@ object ServerProgram:
       yield ()
     }
 
+  /** 用资源作用域管理 HttpServer 和线程池，服务退出时一定关闭。 */
   private def start(settings: HttpServerSettings, api: KubernetesApi, store: StateStore, operationStore: OperationStore, worker: AsyncOperationWorker): IO[Throwable, (HttpServer, ExecutorService)] =
     ZIO.attempt {
       val server = HttpServer.create(new InetSocketAddress(settings.host, settings.port), 0)

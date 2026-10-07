@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.domain
 
+/** Flink Kubernetes 资源模型：将类型化的作业配置渲染为 Flink Operator 所需的 CR JSON。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import ujson.*
@@ -14,6 +15,7 @@ final case class FlinkJob(
     initialSavepointPath: Option[SnapshotPath] = None,
     allowNonRestoredState: Option[Boolean] = None
 ):
+  /** 生成 FlinkDeployment.spec，字段名保持 Operator CRD 契约。 */
   def json: Obj =
     val value = Obj(
       "jarURI" -> jarUri.uriValue,
@@ -58,6 +60,7 @@ final case class FlinkDeploymentSpec(
     podTemplate.foreach(value => spec("podTemplate") = value)
     spec
 
+  /** 生成完整的 FlinkDeployment CR。 */
   def resource: Obj =
     Obj(
       "apiVersion" -> "flink.apache.org/v1beta1",
@@ -80,6 +83,7 @@ final case class FlinkSessionJobSpec(
       "spec" -> Obj("deploymentName" -> deploymentName.nameValue, "job" -> job.json)
     )
 
+/** Operator 支持的状态快照类型。 */
 enum SnapshotType:
   case Savepoint, Checkpoint
 
@@ -90,6 +94,7 @@ object SnapshotType:
       case "checkpoint" => Right(Checkpoint)
       case other => Left(s"unknown snapshot type: $other (use savepoint or checkpoint)")
 
+/** FlinkStateSnapshot 的声明式请求。 */
 final case class FlinkStateSnapshotSpec(
     namespace: Namespace,
     name: DeploymentName,

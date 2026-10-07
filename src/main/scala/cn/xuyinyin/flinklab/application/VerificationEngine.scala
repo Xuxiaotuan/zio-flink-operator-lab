@@ -1,5 +1,6 @@
 package cn.xuyinyin.flinklab.application
 
+/** 结果验证器：只根据 Operator 返回的可观察证据判断操作是否完成，避免把“已提交”误报成“已成功”。 */
 import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
@@ -8,6 +9,7 @@ import cn.xuyinyin.flinklab.operator.watch.{FlinkStateSnapshotStatus, FlinkStatu
 
 import java.time.Instant
 
+/** 一次观察到的 Kubernetes 证据快照，包含判断成功所需的版本、状态和原始 JSON。 */
 final case class Evidence(
     resource: ResourceRef,
     resourceVersion: Option[ResourceVersion],
@@ -25,10 +27,13 @@ final case class Evidence(
     snapshotFailures: Option[String] = None,
     actualProtection: Option[ActualProtection] = None
 ):
+  /** 缩小证据字段后写入 operation 事件，避免把整份 CR 无限复制到审计记录。 */
   def audit(reason: String): VerificationEvidence =
     VerificationEvidence(resource, resourceVersion, uid, generation, observedGeneration, snapshotState, snapshotPath, reason)
 
+/** 从观察结果提取可审计证据，不在这里猜测缺失字段的含义。 */
 object Evidence:
+  /** 将统一的 ResourceObservation 转成部署或快照对应的 Evidence。 */
   def fromObservation(namespace: Namespace, observation: ResourceObservation): Evidence =
     val resource = ResourceRef(namespace, observation.kind, DeploymentName.unsafe(observation.name), observation.uid.flatMap(ResourceUid.from(_).toOption))
     val rv = observation.resourceVersion.flatMap(ResourceVersion.from(_).toOption)
@@ -81,6 +86,7 @@ object Evidence:
 final case class VerificationResult(evidence: Evidence, reason: String)
 
 trait VerificationEngine:
+  /** 根据请求意图、目标身份、提交 generation 和当前 Evidence 判定结果。 */
   def verify(
       operation: FlinkOperation,
       expected: ResourceRef,
@@ -89,6 +95,7 @@ trait VerificationEngine:
   ): Either[ControlPlaneError, VerificationResult]
 
 object DefaultVerificationEngine extends VerificationEngine:
+  /** 严格策略要求对应的实际保护证据；READY 本身不足以代表成功。 */
   override def verify(
       operation: FlinkOperation,
       expected: ResourceRef,
