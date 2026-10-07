@@ -129,4 +129,4 @@ helm upgrade --install flink-kubernetes-operator \
   --set watchNamespaces[0]=bigdata-lab
 ```
 
-目标集群的 Operator、两副本服务和 `zio-control-plane-smoke-5` 示例 Job 已完成一次运行验证：两个副本分别调度到 `xjw`、`xxt`，并从两个 NodePort 读取到同一个 `COMPLETED` operation。savepoint 仍需把 RustFS endpoint、S3 插件和凭据以目标 Job 的 Secret 方式接入后再验收；当前没有把 `FlinkStateSnapshot` CR 已创建误报为 RustFS 写入成功。
+目标集群的 Operator、两副本服务和 Stateful Job 已完成真实验证：两个副本分别调度到 `xjw`、`xxt`，并从两个 NodePort 读取到统一的 operation；checkpoint/savepoint 已写入 RustFS，Savepoint 恢复日志和连续 checkpoint 已核对。另用 PostgreSQL 后端启动了跨节点双副本控制面，两台 NodePort 返回相同 operation 生命周期，测试表和临时资源已在验收后清理。过期 `FlinkOperationLock` 也已在真实 Kubernetes API 中被新操作接管并在完成后释放。`FlinkStateSnapshot` CR 的创建仍不能单独证明对象存储成功，验收必须同时检查 RustFS 结果路径或对象。控制面 HTTP 压力测试 60 秒共 9507 次请求全部成功；10 分钟双节点稳定性测试 468 次请求全部成功、P95 66.4ms、无 Pod 重启。该指标是控制面读请求基线，不代表 Flink 作业吞吐容量。

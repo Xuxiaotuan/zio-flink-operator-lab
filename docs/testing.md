@@ -15,7 +15,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 本轮实际结果：`sbt -batch test` 通过 112 个测试；`sbt -batch assembly` 成功生成 assembly（SHA-1 `f1550e37275e4f8cf5154e82762d9b2a2c9c52d2`）；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
 
-以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复和单副本故障演练已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。锁租约接管已具备代码和回归测试，仍需单独的 Kubernetes Lock CR 现场演练记录。
+以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复、单副本故障演练、锁租约接管和 PostgreSQL 双节点运行已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。控制面压力与长稳测试的结果记录在本页最新现场验收中。
 
 现场验收记录：StatefulCounterJob 的现场验收使用 PipelineRun #27（`zio-flink-operator-lab-wjclx`）构建的 Stateful Job 镜像，已通过 RustFS checkpoint、FlinkStateSnapshot savepoint 和新 Deployment 的 `initialSavepointPath` 恢复；checkpoint REST 记录多次 `COMPLETED`，savepoint `s3://flink-savepoints/zio-e2e/savepoints/savepoint-26cb8d-c93fc0e044c9` 的 RustFS `_metadata` HEAD 返回 200。原任务挂起前计数 `115921`，恢复任务日志达到 `116404`，JobManager 同时记录了 `Restoring job ... from Savepoint`。使用默认 180 秒窗口复验的 `zio-e2e-restore3` operation 进入 `COMPLETED`，观察到 `RUNNING/DEPLOYED`。
 
@@ -43,6 +43,13 @@ mvn -B -f job/pom.xml package -DskipTests
 - 首次使用 build `#29` 做真实严格 Savepoint 升级时，operation `b34bf428-6a80-387f-8e96-b95ba49d11dd` 正确进入 `FAILED`，原因是 Operator 的升级结果路径位于 `status.jobStatus.upgradeSavepointPath`，旧观察逻辑只读取 `savepointInfo.lastSavepoint.location`，且不能把 READY 但证据暂缺视为确定失败。该现场失败促成 `a4ffa3b` 修复，并保留为回归依据。
 - build `#30` 部署后，真实 `zio-e2e-strict-savepoint` 通过 HTTP 提交严格 Savepoint 升级；operation `966c9524-0494-373c-991a-ed2ccc30f27e` 最终为 `COMPLETED`，事件包含 `SUBMITTED → WAITING_FOR_OBSERVATION → OBSERVED → VERIFICATION_SUCCEEDED`，generation/observedGeneration 均为 `3`，审计证据保存路径 `s3://flink-savepoints/zio-e2e-strict/savepoints/savepoint-176ced-43a90de992e0`。
 - 同一 Job 的 Flink 日志记录从该 Savepoint 恢复，并连续完成 checkpoint `302` 至 `318`；RustFS 对该路径的 `_metadata` HEAD 返回 HTTP 200。验证后通过 operation `40fe3b54-1380-37df-bd6f-24e3411e96ef` 删除 Deployment，两个升级 Snapshot CR 也已删除；复查没有 `zio-e2e-*` 或 smoke 的 FlinkDeployment、FlinkStateSnapshot、Pod、Service、ReplicaSet、Deployment 或 Lock 残留。对应的 FlinkOperation CR 和 RustFS 快照对象保留为审计和恢复证据。
+
+### 多节点锁、PostgreSQL 与稳定性验收（2026-10-08）
+
+- 真实租约接管：先在 `bigdata-lab` 创建已过期的 `FlinkOperationLock/flink-lock-874c2d79e17088bf`，旧 operation 为 `zio-e2e-lock-old`；通过双副本控制面提交后，operation `9afbee58-823b-3d6e-8f0e-4fdad1a9574d` 创建新锁 UID、更新 `spec.operationId` 并延长 `leaseUntil`，最终进入 `COMPLETED`。随后删除 operation `4a383749-387e-35bd-aadf-45eb38e9dbc3` 完成清理，Lock、Deployment、Snapshot、Pod 和 Service 均无残留。
+- PostgreSQL 双节点：临时双副本控制面分别调度到 `xxt`、`xjw`，使用 PostgreSQL 状态与 operation store。两台 NodePort（`30884`）的 `/v1/state?namespace=bigdata-lab` 均返回 `backend=postgres` 和相同 `resourceVersion=205312379`；同一个 requestId 在两台入口得到 operation `6001acb1-e3c0-362d-8a25-d610bcc356be`，两台查询均为 `COMPLETED`，事件链一致为 `ACCEPTED → VALIDATION_STARTED → VALIDATION_PASSED → SUBMITTED → WAITING_FOR_OBSERVATION → VERIFICATION_STARTED → OBSERVED → VERIFICATION_SUCCEEDED`。清理 operation `67658226-1eae-30d4-8a83-d3201b878a8b` 完成后，临时 Deployment、Service、Secret 和测试表已删除。
+- 压力基线：16 并发、60 秒、两节点交替访问健康和状态接口，共 9507 次请求，成功率 100%。`/healthz` 7610 次，P50/P95/P99/最大延迟为 `20.4/159.0/255.2/425.2 ms`；`/v1/state` 1897 次，P50/P95/P99/最大延迟为 `58.9/512.2/745.4/930.2 ms`。按成功率 ≥99%、健康 P95 ≤500ms、状态 P95 ≤2000ms 的本轮基线通过。
+- 长稳基线：10 分钟、每 5 秒从两台 NodePort 访问 `/healthz` 和 `/v1/state`，共 468 次请求全部成功，错误率 `0%`，P95 `66.4ms`，最大 `451.7ms`；两个控制面 Pod 全程 `restartCount=0`。这是控制面读请求稳定性证据，不是 Flink 作业吞吐、故障注入或多小时生产 SLO 证明。
 
 - PipelineRun `zio-flink-operator-lab-wjclx`（Jenkins build `#27`）成功：提交 `0561654` 的测试、assembly、控制面镜像和 Stateful Job 镜像均完成，目标 Deployment rollout 到 `build-27-0561654c8687`。
 - PipelineRun `zio-flink-operator-lab-wh67d`（Jenkins build `#28`）成功：提交 `0e72734` 的 108 个测试、assembly、控制面镜像和 Stateful Job 镜像均完成，目标 Deployment rollout 到 `build-28-0e72734e935c`；两副本分别位于 xxt、xjw。
