@@ -90,7 +90,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
-            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(2), Some(2), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"11","uid":"uid","generation":2},"spec":{"flinkConfiguration":{"state.savepoints.dir":"s3://savepoints/orders"}},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":2}}"""))
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(2), Some(2), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"11","uid":"uid","generation":2},"spec":{"flinkConfiguration":{"state.savepoints.dir":"s3://savepoints/orders"}},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"RUNNING","savepointInfo":{"lastSavepoint":{"location":"s3://savepoints/orders/savepoint-1"}}},"reconciliationStatus":{"state":"DEPLOYED","lastReconciledSpec":"{\"spec\":{\"job\":{\"upgradeMode\":\"savepoint\"}}}"},"observedGeneration":2}}"""))
         store <- InMemoryOperationStore.make
         mutex <- OperationMutex.make
         worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
@@ -168,5 +168,26 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         _ <- store.transition(accepted.operationId, OperationEvent.VerificationStarted(Instant.now()))
         completed <- worker.process(accepted.operationId)
       yield assertTrue(completed.state == OperationState.Completed, completed.events.count(_.isInstanceOf[OperationEvent.FallbackDetected]) == 1)
+    },
+    test("fails an upgrade when a ready observation omits protection evidence") {
+      for
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"11","generation":2}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(2), Some(2), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"11","uid":"uid","generation":2},"spec":{"flinkConfiguration":{"state.savepoints.dir":"s3://savepoints/orders"}},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":2}}"""))
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
+        spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.Savepoint), savepointDirectory = Some("s3://savepoints/orders"))
+        operation = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, name), spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-missing-protection").toOption.get, operation)
+        result <- worker.process(accepted.operationId).either
+        stored <- store.get(accepted.operationId)
+      yield assertTrue(result.isLeft, stored.exists(value => value.state == OperationState.Failed && value.events.exists(_.toString.contains("state protection evidence is unavailable"))))
     }
   )

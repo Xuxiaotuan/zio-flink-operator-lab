@@ -58,5 +58,18 @@ object VerificationEngineSpec extends ZIOSpecDefault:
       val operation = FlinkOperation.Upgrade(ref, spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
       val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(4), Some(4), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"11","uid":"uid","generation":4},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED","lastReconciledSpec":"{\"spec\":{\"job\":{\"upgradeMode\":\"last-state\"}}}"},"observedGeneration":4}}""")
       assertTrue(DefaultVerificationEngine.verify(operation, ref, Evidence.fromObservation(namespace, observation)).isLeft)
+    },
+    test("rejects strict savepoint upgrade when actual protection evidence is missing") {
+      val spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.Savepoint))
+      val operation = FlinkOperation.Upgrade(ref, spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(4), Some(4), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"11","uid":"uid","generation":4},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":4}}""")
+      val result = DefaultVerificationEngine.verify(operation, ref, Evidence.fromObservation(namespace, observation))
+      assertTrue(result.isLeft, result.left.toOption.exists(_.message.contains("protection evidence")))
+    },
+    test("does not treat missing protection evidence as an allowed fallback") {
+      val spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.Savepoint))
+      val operation = FlinkOperation.Upgrade(ref, spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.AllowLastState))
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("11"), Some("uid"), Some(4), Some(4), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"11","uid":"uid","generation":4},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":4}}""")
+      assertTrue(DefaultVerificationEngine.verify(operation, ref, Evidence.fromObservation(namespace, observation)).isLeft)
     }
   )

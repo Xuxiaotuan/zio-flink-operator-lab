@@ -54,7 +54,7 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 请求接受和操作完成是两个结果。HTTP/CLI 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。PolicyEngine 不通过时不会写 Kubernetes。验证会持续观察，只有 `Evidence` 同时满足资源身份、UID、提交后的 generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；确定失败进入 `Failed`，等待超时进入 `TimedOut`，提交请求结果不确定进入 `Uncertain`。
 
-严格 savepoint 策略的语义是：`StateProtection.Savepoint + FallbackPolicy.Forbidden` 在 Operator 的 `lastReconciledSpec` 显式表现为非 savepoint 时拒绝；`AllowLastState` 允许该结果完成，但会追加 `FALLBACK_DETECTED` 审计事件。网络中断使用 `Uncertain`，被新操作覆盖使用 `Superseded`，超时使用 `TimedOut`。
+严格 savepoint 策略的语义是：`StateProtection.Savepoint` 只有在 Evidence 明确包含 savepoint 保护和结果路径时才完成；Operator 的 `lastReconciledSpec` 缺失或显式表现为非 savepoint 时拒绝。`AllowLastState` 只允许明确观察到 `last-state` 的结果，并追加 `FALLBACK_DETECTED` 审计事件，不把未知证据当作 fallback。网络中断使用 `Uncertain`，被新操作覆盖使用 `Superseded`，超时使用 `TimedOut`。
 
 ## 当前实现边界
 

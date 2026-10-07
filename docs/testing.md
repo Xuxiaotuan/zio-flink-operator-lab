@@ -13,7 +13,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、CLI/HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
 
-本轮实际结果：`sbt -batch test` 通过 108 个测试；`sbt -batch assembly` 成功生成 assembly（SHA-1 `43a578bfc514dc7f25aa20db1b16b3c4f957c394`）；`mvn -B -f job/pom.xml package -DskipTests` 返回 `BUILD SUCCESS`；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
+本轮实际结果：`sbt -batch test` 通过 111 个测试；`sbt -batch assembly` 成功生成 assembly（SHA-1 `a557d87bc5b552f874b4a91833596d34bf012030`）；`mvn -B -f job/pom.xml package -DskipTests` 返回 `BUILD SUCCESS`；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复和单副本故障演练已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。锁租约接管已具备代码和回归测试，仍需单独的 Kubernetes Lock CR 现场演练记录。
 

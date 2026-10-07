@@ -111,11 +111,11 @@ object DefaultVerificationEngine extends VerificationEngine:
             val reason = evidence.snapshotError.orElse(evidence.snapshotFailures).getOrElse("snapshot has not completed with a result path")
             Left(ControlPlaneError.VerificationFailed(reason))
         case FlinkOperation.Upgrade(_, _, policy) =>
-          val fallback = evidence.actualProtection.collect { case actual if !matches(policy.protection, actual) => actual }
-          fallback match
+          evidence.actualProtection match
+            case None => Left(ControlPlaneError.VerificationFailed("state protection evidence is unavailable"))
+            case Some(actual) if matches(policy.protection, actual) => ready(evidence, s"job is ${evidence.jobState} and reconciled")
             case Some(ActualProtection.LastState) if policy.fallback == FallbackPolicy.AllowLastState => ready(evidence, "last-state fallback accepted")
             case Some(actual) => Left(ControlPlaneError.VerificationFailed(s"requested ${policy.protection} but observed ${actual}"))
-            case None => ready(evidence, s"job is ${evidence.jobState} and reconciled")
         case FlinkOperation.Delete(_, _) => Right(VerificationResult(evidence, "delete acknowledged"))
         case _ =>
           ready(evidence, s"job is ${evidence.jobState} and reconciled")
