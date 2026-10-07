@@ -144,7 +144,7 @@ final class DefaultAsyncOperationWorker(
       .map { evidence =>
         verifier.verify(operation, target, evidence, expectedGeneration) match
           case Right(result) => Some(Right(result.evidence))
-          case Left(error) if deterministicFailure(operation, evidence) => Some(Left(error))
+          case Left(error) if deterministicFailure(evidence) => Some(Left(error))
           case Left(_) => None
       }
       .collectSome
@@ -157,14 +157,12 @@ final class DefaultAsyncOperationWorker(
       }
       .timeoutFail(ControlPlaneError.VerificationTimedOut("verification timed out while waiting for the submitted generation"))(verificationTimeout)
 
-  private def deterministicFailure(operation: FlinkOperation, evidence: Evidence): Boolean =
+  private def deterministicFailure(evidence: Evidence): Boolean =
     evidence.jobState == JobState.Failed || evidence.reconciliation == ReconciliationState.Error || evidence.snapshotState.exists { state =>
       state.toUpperCase match
         case "FAILED" | "ABANDONED" | "ERROR" => true
         case _ => false
-    } || (operation match
-      case FlinkOperation.Upgrade(_, _, _) => evidence.reconciliation == ReconciliationState.Ready && evidence.actualProtection.isEmpty
-      case _ => false)
+    }
 
   private def awaitDeletion(target: ResourceRef): IO[ControlPlaneError, Unit] =
     observer.observe(target.namespace, target.kind, Some(target.name.nameValue))

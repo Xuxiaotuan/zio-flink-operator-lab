@@ -66,6 +66,13 @@ object VerificationEngineSpec extends ZIOSpecDefault:
       val result = DefaultVerificationEngine.verify(operation, ref, Evidence.fromObservation(namespace, observation))
       assertTrue(result.isLeft, result.left.toOption.exists(_.message.contains("protection evidence")))
     },
+    test("accepts the operator upgrade savepoint path as protection evidence") {
+      val spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.Savepoint))
+      val operation = FlinkOperation.Upgrade(ref, spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("12"), Some("uid"), Some(5), Some(5), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"12","uid":"uid","generation":5},"status":{"jobStatus":{"state":"RUNNING","savepointInfo":{},"upgradeSavepointPath":"s3://bucket/upgrade-sp"},"reconciliationStatus":{"state":"DEPLOYED","lastReconciledSpec":"{\"spec\":{\"job\":{\"upgradeMode\":\"savepoint\"}}}"},"observedGeneration":5}}""")
+      val evidence = Evidence.fromObservation(namespace, observation)
+      assertTrue(evidence.actualProtection.contains(ActualProtection.Savepoint(SnapshotPath.from("s3://bucket/upgrade-sp").toOption.get)), DefaultVerificationEngine.verify(operation, ref, evidence).isRight)
+    },
     test("does not treat missing protection evidence as an allowed fallback") {
       val spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.Savepoint))
       val operation = FlinkOperation.Upgrade(ref, spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.AllowLastState))

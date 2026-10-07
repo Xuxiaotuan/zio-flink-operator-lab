@@ -188,6 +188,6 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-missing-protection").toOption.get, operation)
         result <- worker.process(accepted.operationId).either
         stored <- store.get(accepted.operationId)
-      yield assertTrue(result.isLeft, stored.exists(value => value.state == OperationState.Failed && value.events.exists(_.toString.contains("state protection evidence is unavailable"))))
+      yield assertTrue(result.isLeft, stored.exists(_.state == OperationState.Failed))
     }
   )

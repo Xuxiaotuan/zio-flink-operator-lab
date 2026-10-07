@@ -41,7 +41,7 @@ object Evidence:
       case _ =>
         val status = FlinkStatusSnapshot.fromJsonString(observation.payload).toOption
         val configuration = scala.util.Try(ujson.read(observation.payload)).toOption.flatMap(_.obj.get("spec").flatMap(_.objOpt)).flatMap(_.get("flinkConfiguration")).flatMap(_.objOpt).flatMap(_.get("state.savepoints.dir")).flatMap(_.strOpt).flatMap(SnapshotPath.from(_).toOption)
-        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)), Instant.now(), observation.payload, configuration, actualProtection = actualProtection(observation.payload, status))
+        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, savepointPath(status), Instant.now(), observation.payload, configuration, actualProtection = actualProtection(observation.payload, status))
 
   private def reconciliation(value: Option[String], error: Option[String]): ReconciliationState =
     if error.exists(_.trim.nonEmpty) then ReconciliationState.Error
@@ -70,10 +70,13 @@ object Evidence:
     yield upgradeMode.trim.toLowerCase
     mode.flatMap {
       case "last-state" | "laststate" => Some(ActualProtection.LastState)
-      case "savepoint" => status.flatMap(_.lastSavepointLocation.flatMap(SnapshotPath.from(_).toOption)).map(ActualProtection.Savepoint.apply)
+      case "savepoint" => savepointPath(status).map(ActualProtection.Savepoint.apply)
       case "stateless" => Some(ActualProtection.EmptyState)
       case _ => None
     }
+
+  private def savepointPath(status: Option[FlinkStatusSnapshot]): Option[SnapshotPath] =
+    status.flatMap(value => value.savepoint.flatMap(_.upgradeSavepointPath).orElse(value.lastSavepointLocation)).flatMap(SnapshotPath.from(_).toOption)
 
 final case class VerificationResult(evidence: Evidence, reason: String)
 
