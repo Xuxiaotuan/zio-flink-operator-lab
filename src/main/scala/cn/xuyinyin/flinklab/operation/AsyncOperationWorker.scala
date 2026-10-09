@@ -71,13 +71,13 @@ final class DefaultAsyncOperationWorker(
   private def resumeOperation(id: OperationId, current: Operation): IO[ControlPlaneError, Operation] =
     for
       _ <- current.state match
-        case OperationState.Submitted => transition(id, OperationEvent.WaitingForObservation(Instant.now())).unit
-        case OperationState.WaitingForObservation | OperationState.Reconciling => transition(id, OperationEvent.VerificationStarted(Instant.now())).unit
-        case OperationState.Verifying => ZIO.unit
-        case _ => ZIO.unit
-      _ <- current.state match
-        case OperationState.Submitted => transition(id, OperationEvent.VerificationStarted(Instant.now())).unit
-        case _ => ZIO.unit
+        // Submitted 必须按持久化状态机逐步推进，不能用旧快照连续写两个互相冲突的事件。
+        case OperationState.Submitted =>
+          transition(id, OperationEvent.WaitingForObservation(Instant.now())).unit *>
+            transition(id, OperationEvent.VerificationStarted(Instant.now())).unit
+        case OperationState.WaitingForObservation | OperationState.Reconciling =>
+          transition(id, OperationEvent.VerificationStarted(Instant.now())).unit
+        case OperationState.Verifying | _ => ZIO.unit
       target = observationTarget(id, current)
       expectedGeneration = current.events.collect { case OperationEvent.Submitted(_, generation, _, _) => generation }.lastOption.flatten
       // 继续使用提交时记录的 generation，避免旧版本 READY 被误认成当前操作成功。
@@ -221,7 +221,9 @@ final class DefaultAsyncOperationWorker(
   private def submissionError(error: Throwable): ControlPlaneError =
     error match
       case _: java.io.IOException => ControlPlaneError.UncertainFailure(Option(error.getMessage).getOrElse(error.toString))
-      case _: cn.xuyinyin.flinklab.kubernetes.KubernetesApiError => ControlPlaneError.UncertainFailure(Option(error.getMessage).getOrElse(error.toString))
+      // 4xx 是 Kubernetes 已明确拒绝的结果，不能伪装成“未知”；只有限流或服务端/网络异常才保留 UNCERTAIN。
+      case KubernetesApiError(status, _) if status == 429 || status >= 500 => ControlPlaneError.UncertainFailure(Option(error.getMessage).getOrElse(error.toString))
+      case _: cn.xuyinyin.flinklab.kubernetes.KubernetesApiError => ControlPlaneError.VerificationFailed(Option(error.getMessage).getOrElse(error.toString))
       case _ => ControlPlaneError.VerificationFailed(Option(error.getMessage).getOrElse(error.toString))
 
   private def submitToKubernetes(id: OperationId, operation: FlinkOperation): IO[Throwable, String] = operation match

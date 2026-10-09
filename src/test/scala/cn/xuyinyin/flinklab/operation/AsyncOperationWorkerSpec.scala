@@ -144,6 +144,48 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         completed <- worker.process(accepted.operationId)
       yield assertTrue(completed.state == OperationState.Completed, completed.events.exists(_.isInstanceOf[OperationEvent.VerificationSucceeded]))
     },
+    test("resumes a submitted operation through waiting before verification") {
+      for
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException("must not resubmit"))
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("8"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"8","uid":"uid","generation":3},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}"""))
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-submitted-recovery").toOption.get, operation)
+        _ <- store.transition(accepted.operationId, OperationEvent.ValidationStarted(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.ValidationPassed(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(3).toOption, ResourceVersion.from("8").toOption))
+        completed <- worker.process(accepted.operationId)
+      yield assertTrue(completed.state == OperationState.Completed, completed.events.exists(_.isInstanceOf[OperationEvent.WaitingForObservation]), completed.events.exists(_.isInstanceOf[OperationEvent.VerificationStarted]))
+    },
+    test("classifies an explicit Kubernetes 4xx submission rejection as failed") {
+      for
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(403, "forbidden"))
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) = ZStream.empty
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-forbidden").toOption.get, operation)
+        result <- worker.process(accepted.operationId).either
+        stored <- store.get(accepted.operationId)
+      yield assertTrue(result.isLeft, stored.exists(_.state == OperationState.Failed), stored.exists(_.events.exists {
+        case OperationEvent.Failed(_, reason) => reason.contains("HTTP 403")
+        case _ => false
+      }))
+    },
     test("records fallback after recovering an upgrade verification") {
       for
         api <- ZIO.succeed(new KubernetesApi:

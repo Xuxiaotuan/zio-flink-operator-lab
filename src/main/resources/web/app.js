@@ -133,15 +133,21 @@ function init() {
     byId("stop-poll").disabled = false;
     setMessage(byId("operation-message"), `正在观察 ${id}…`, "waiting");
     destination.innerHTML = "";
-    const result = await observeOperation(() => client.operation(id), operation => {
-      const events = (operation.events || []).map(event => `<div class="event"><strong>${escapeHtml(event.type || "event")}</strong><time>${escapeHtml(event.at || "")}</time><div>${escapeHtml(event.reason || "")}</div></div>`).join("");
-      destination.innerHTML = `<article class="panel"><div class="panel-heading"><h2>${escapeHtml(operation.operationId || id)}</h2>${stateBadge(operation.state)}</div><dl class="detail-grid"><div><dt>requestId</dt><dd>${escapeHtml(operation.requestId)}</dd></div><div><dt>resource</dt><dd>${escapeHtml(operation.resource?.name || "—")}</dd></div></dl><div>${events || '<div class="empty">暂无审计事件。</div>'}</div></article>`;
-      setMessage(byId("operation-message"), `当前状态：${operation.state}`, classifyState(operation.state));
-    }, { signal: pollController.signal });
-    byId("stop-poll").disabled = true;
-    if (result === "limit") setMessage(byId("operation-message"), `观察窗口结束，当前结果仍需继续查询：${id}`, "waiting");
-    if (result === "cancelled") setMessage(byId("operation-message"), "已停止观察。", "waiting");
-    if (result === "terminal") refresh();
+    try {
+      const result = await observeOperation(() => client.operation(id), operation => {
+        const events = (operation.events || []).map(event => `<div class="event"><strong>${escapeHtml(event.type || "event")}</strong><time>${escapeHtml(event.at || "")}</time><div>${escapeHtml(event.reason || "")}</div></div>`).join("");
+        destination.innerHTML = `<article class="panel"><div class="panel-heading"><h2>${escapeHtml(operation.operationId || id)}</h2>${stateBadge(operation.state)}</div><dl class="detail-grid"><div><dt>requestId</dt><dd>${escapeHtml(operation.requestId)}</dd></div><div><dt>resource</dt><dd>${escapeHtml(operation.resource?.name || "—")}</dd></div></dl><div>${events || '<div class="empty">暂无审计事件。</div>'}</div></article>`;
+        setMessage(byId("operation-message"), `当前状态：${operation.state}`, classifyState(operation.state));
+      }, { signal: pollController.signal });
+      if (result === "limit") setMessage(byId("operation-message"), `观察窗口结束，当前结果仍需继续查询：${id}`, "waiting");
+      if (result === "cancelled") setMessage(byId("operation-message"), "已停止观察。", "waiting");
+      if (result === "terminal") refresh();
+    } catch (error) {
+      // API Server 短暂不可达时保留当前证据，并明确提示用户，不留下未处理的 Promise 异常。
+      setMessage(byId("operation-message"), `操作状态读取失败：${error.message}`, "error");
+    } finally {
+      byId("stop-poll").disabled = true;
+    }
   }
   function startOperation(body) { if (body.operationId) { byId("operation-id").value = body.operationId; showView("operations"); observe(body.operationId); } }
   async function runAction(action) {
