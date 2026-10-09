@@ -96,7 +96,7 @@ sbt run
 http://127.0.0.1:8080/
 ```
 
-前端静态资源由 assembly 打进同一个 JAR，不部署第二个前端服务。工作台通过 `/v1/deployments`、`/v1/snapshots`、`/v1/state` 和 `/v1/operations/{id}` 读取状态，通过 HTTP POST 触发操作，并用有界轮询观察 Operation；初始 `202 ACCEPTED` 不会被显示为完成。
+前端静态资源由 assembly 打进同一个 JAR，不部署第二个前端服务。工作台先从只读 `/v1/config` 读取服务默认 namespace，再通过 `/v1/deployments`、`/v1/snapshots`、`/v1/state` 和 `/v1/operations/{id}` 读取状态，通过 HTTP POST 触发操作，并用有界轮询观察 Operation；初始 `202 ACCEPTED` 不会被显示为完成。
 
 当前版本没有认证和授权。生产或共享集群必须使用私有 Service/Ingress、NetworkPolicy 或其他网络边界，只允许受信任的运维网络访问。相关字段见 [状态监控](monitoring.md)。
 

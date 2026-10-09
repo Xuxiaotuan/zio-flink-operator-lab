@@ -22,6 +22,13 @@ object KubernetesHttpApiSpec extends ZIOSpecDefault:
         ready <- KubernetesHttpApi.handleWith(fake, ApiRequest("GET", "/readyz"), settings)
       yield assertTrue(health.status == 200, ready.status == 200, health.body == "{\"status\":\"ok\"}")
     },
+    test("exposes the configured default namespace to the browser") {
+      for
+        fake <- FakeKubernetesApi.make
+        response <- KubernetesHttpApi.handleWith(fake, ApiRequest("GET", "/v1/config"), settings)
+        json = ujson.read(response.body)
+      yield assertTrue(response.status == 200, json("namespace").str == "analytics")
+    },
     test("applies a deployment through the KubernetesApi port") {
       for
         fake <- FakeKubernetesApi.make

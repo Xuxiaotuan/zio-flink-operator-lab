@@ -155,6 +155,9 @@ object KubernetesHttpApi:
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
       case ("GET", "healthz" :: Nil) | ("GET", "readyz" :: Nil) =>
         ZIO.succeed(ok("{\"status\":\"ok\"}"))
+      case ("GET", "v1" :: "config" :: Nil) =>
+        // 前端只读取非敏感运行配置，避免把部署环境的 namespace 硬编码进静态资源。
+        ZIO.succeed(ok(ujson.Obj("namespace" -> settings.defaultNamespace).render()))
       case ("POST", "v1" :: "deployments" :: Nil) =>
         applyDeployment(request, settings)
       case ("GET", "v1" :: "deployments" :: Nil) =>

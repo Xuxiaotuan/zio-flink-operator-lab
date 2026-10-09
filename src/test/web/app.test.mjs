@@ -22,6 +22,12 @@ test('Kubernetes error remains an error instead of becoming an empty successful 
   const client = createClient(async () => reply(503, { error: 'API unavailable' }));
   await assert.rejects(client.deployments('default'), /503.*API unavailable/);
 });
+test('client reads the server default namespace configuration', async () => {
+  const calls = [];
+  const client = createClient(async url => { calls.push(url); return reply(200, { namespace: 'bigdata-lab' }); });
+  assert.deepEqual(await client.config(), { namespace: 'bigdata-lab' });
+  assert.deepEqual(calls, ['/v1/config']);
+});
 test('polling observes acceptance until terminal state then stops', async () => {
   const seen = [];
   let calls = 0;

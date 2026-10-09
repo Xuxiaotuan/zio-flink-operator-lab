@@ -27,6 +27,7 @@ object WebUiSpec extends ZIOSpecDefault:
         script.status == 200,
         script.contentType == "text/javascript",
         script.body.contains("requestId"),
+        script.body.contains("/v1/config"),
         script.body.contains("encodeURIComponent"),
         script.body.contains("/v1/operations/"),
         script.body.contains("COMPLETED"),

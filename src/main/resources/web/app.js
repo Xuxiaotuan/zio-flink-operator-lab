@@ -41,6 +41,7 @@ export function createClient(fetchImpl = window.fetch.bind(window)) {
     request,
     deployments: namespace => request(`/v1/deployments?${query({ namespace })}`),
     snapshots: namespace => request(`/v1/snapshots?${query({ namespace })}`),
+    config: () => request("/v1/config"),
     state: namespace => request(`/v1/state?${query({ namespace })}`),
     status: (namespace, name) => request(`/v1/deployments/${encodeURIComponent(name)}/status?${query({ namespace })}`),
     operation: id => request(`/v1/operations/${encodeURIComponent(id)}`),
@@ -159,7 +160,16 @@ function init() {
   byId("operation-form").addEventListener("submit", event => { event.preventDefault(); observe(byId("operation-id").value.trim()); });
   byId("stop-poll").addEventListener("click", () => pollController?.abort());
   showView(location.hash.slice(1) || "overview");
-  refresh();
+  async function bootstrap() {
+    try {
+      const config = await client.config();
+      if (config.namespace) byId("namespace").value = config.namespace;
+    } catch (error) {
+      setMessage(byId("overview-message"), `未读取服务默认 namespace，使用当前输入值：${error.message}`, "error");
+    }
+    await refresh();
+  }
+  bootstrap();
 }
 
 if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", init);
