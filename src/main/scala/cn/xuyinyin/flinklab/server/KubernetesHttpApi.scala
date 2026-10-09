@@ -20,7 +20,12 @@ final case class ApiRequest(
 )
 
 /** HTTP 响应模型，测试和真实 HttpServer 共用。 */
-final case class ApiResponse(status: Int, body: String, contentType: String = "application/json")
+final case class ApiResponse(
+    status: Int,
+    body: String,
+    contentType: String = "application/json",
+    headers: Map[String, String] = Map.empty
+)
 
 final case class KubernetesHttpSettings(
     defaultNamespace: String = "default",

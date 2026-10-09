@@ -13,6 +13,7 @@ object WebUiSpec extends ZIOSpecDefault:
         assertTrue(
           result.status == 200,
           result.contentType == "text/html",
+          result.headers.get("Cache-Control").contains("no-store"),
           result.body.contains("ZIO Flink Platform"),
           result.body.contains("/v1/deployments"),
           result.body.contains("operationId")

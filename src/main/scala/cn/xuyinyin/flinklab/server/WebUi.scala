@@ -19,6 +19,6 @@ object WebUi:
           ZIO.acquireRelease(ZIO.attemptBlocking(Option(getClass.getResourceAsStream(resource)).getOrElse(
             throw IllegalStateException(s"packaged web asset missing: $resource")
           )))(stream => ZIO.attemptBlocking(stream.close()).ignore).flatMap { stream =>
-            ZIO.attemptBlocking(Some(ApiResponse(200, String(stream.readAllBytes(), StandardCharsets.UTF_8), contentType)))
+            ZIO.attemptBlocking(Some(ApiResponse(200, String(stream.readAllBytes(), StandardCharsets.UTF_8), contentType, Map("Cache-Control" -> "no-store"))))
           }
         }.catchAll(_ => ZIO.some(ApiResponse(500, KubernetesHttpApi.errorJson("web assets are unavailable"))))

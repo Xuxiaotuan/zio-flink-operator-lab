@@ -67,6 +67,7 @@ object ServerProgram:
             }
             val bytes = response.body.getBytes(StandardCharsets.UTF_8)
             exchange.getResponseHeaders.set("Content-Type", response.contentType + "; charset=utf-8")
+            response.headers.foreach { case (name, value) => exchange.getResponseHeaders.set(name, value) }
             exchange.sendResponseHeaders(response.status, bytes.length.toLong)
             val output = exchange.getResponseBody
             try output.write(bytes)
