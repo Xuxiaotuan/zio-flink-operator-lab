@@ -1,7 +1,7 @@
 package cn.xuyinyin.flinklab.kubernetes
 /** 测试用 KubernetesApi fake，记录调用并返回可控的资源和 watch 事件。 */
 
-import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.operator.watch.WatchEvent
 import zio.*

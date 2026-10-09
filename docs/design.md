@@ -5,10 +5,10 @@
 项目北极星是：**类型化、可审计、可验证结果的 Flink 操作控制面**。Scala 3 类型负责表达哪些操作和状态保护策略是合法的；ZIO 负责 Kubernetes 副作用、错误通道、资源生命周期、并发和重试。
 
 ```text
-CLI / HTTP
+HTTP API
     |
     v
-ZIO OperatorProgram
+ZIO ServerProgram
     |
     v
 Typed FlinkControlPlane
@@ -50,15 +50,15 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 | `OperationEvent` | 不可变操作历史，记录提交、观察、快照、验证和不确定结果 |
 | `RequestId`、`OperationId`、`ResourceUid` | 分离请求重试、控制面操作和 Kubernetes 资源实例 |
 
-`FlinkOperationFactory` 把 CLI apply 和 HTTP 写请求转换成同一个 `FlinkOperation`。`PolicyEngine` 负责升级策略校验；`AsyncOperationWorker` 负责状态推进、Kubernetes 提交、观察和验证。`OperationStore` 默认使用 Kubernetes `FlinkOperation` CR，`ZIO_FLINK_OPERATION_STORE=postgres` 时才使用 PostgreSQL，`memory` 只用于单进程测试。Kubernetes 适配器仍是唯一提交边界。
+`FlinkOperationFactory` 把 HTTP 写请求转换成同一个 `FlinkOperation`。`PolicyEngine` 负责升级策略校验；`AsyncOperationWorker` 负责状态推进、Kubernetes 提交、观察和验证。`OperationStore` 默认使用 Kubernetes `FlinkOperation` CR，`ZIO_FLINK_OPERATION_STORE=postgres` 时才使用 PostgreSQL，`memory` 只用于单进程测试。Kubernetes 适配器仍是唯一提交边界。
 
-请求接受和操作完成是两个结果。HTTP/CLI 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。PolicyEngine 不通过时不会写 Kubernetes。验证会持续观察，只有 `Evidence` 同时满足资源身份、UID、提交后的 generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；确定失败进入 `Failed`，等待超时进入 `TimedOut`，提交请求结果不确定进入 `Uncertain`。
+请求接受和操作完成是两个结果。HTTP 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。PolicyEngine 不通过时不会写 Kubernetes。验证会持续观察，只有 `Evidence` 同时满足资源身份、UID、提交后的 generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；确定失败进入 `Failed`，等待超时进入 `TimedOut`，提交请求结果不确定进入 `Uncertain`。
 
 严格 savepoint 策略的语义是：`StateProtection.Savepoint` 只有在 Evidence 明确包含 savepoint 保护和结果路径时才完成；Operator 的 `lastReconciledSpec` 缺失或显式表现为非 savepoint 时拒绝。`AllowLastState` 只允许明确观察到 `last-state` 的结果，并追加 `FALLBACK_DETECTED` 审计事件，不把未知证据当作 fallback。网络中断使用 `Uncertain`，被新操作覆盖使用 `Superseded`，超时使用 `TimedOut`。
 
 ## 当前实现边界
 
-1. CLI apply 和 HTTP 写请求统一生成 `FlinkOperation`，服务返回 `operationId`。
+1. HTTP 写请求统一生成 `FlinkOperation`，服务返回 `operationId`。
 2. `ResourceObserver` 先 list，再用 list 的 `resourceVersion` watch；收到 410 Gone 会重新 list。
 3. `VerificationEngine` 使用 `Evidence` 校验 UID、generation、observedGeneration、reconciliation 和 Job 状态。
 4. `AsyncOperationWorker` 执行提交、观察、验证和失败转移；Kubernetes `FlinkOperationLock` CR 保护跨副本的资源级互斥，带 `leaseUntil` 的锁会持续续租，过期锁可按 UID 接管，`OperationMutex` 保护进程内副作用。PostgreSQL 后端使用行锁保护共享操作记录。
@@ -68,13 +68,13 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 | 资源 | 用途 |
 | --- | --- |
-| `FlinkDeployment` | 当前 CLI 模板创建 Application Cluster 并运行一个 Flink Job |
+| `FlinkDeployment` | 当前 HTTP 模板创建 Application Cluster 并运行一个 Flink Job |
 | `FlinkSessionJob` | 把 Job 提交到已有的 Session Cluster |
 | `FlinkStateSnapshot` | 请求 savepoint 或 checkpoint，并观察快照状态 |
 
 所有资源都通过 Kubernetes API Server 提交。程序不调用 `kubectl`，不直接操作 JobManager Pod。
 
-`apply` 使用 Server-Side Apply，旧的 `savepoint` 与 `suspend-savepoint` 使用局部 merge patch，作为兼容入口保留。typed checkpoint/savepoint operation 使用确定名称创建 `FlinkStateSnapshot`，随后只观察这一个 Snapshot CR；Operator 记录请求、结果路径和失败信息。
+HTTP 部署请求使用 Server-Side Apply；typed checkpoint/savepoint operation 使用确定名称创建 `FlinkStateSnapshot`，随后只观察这一个 Snapshot CR。Operator 记录请求、结果路径和失败信息。
 
 ## 状态来源
 

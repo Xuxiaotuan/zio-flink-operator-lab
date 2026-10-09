@@ -2,7 +2,6 @@ package cn.xuyinyin.flinklab.operation
 /** 验证 PostgreSQL 配置和 operation 审计文档的编解码边界。 */
 
 import zio.test.*
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import java.time.Instant

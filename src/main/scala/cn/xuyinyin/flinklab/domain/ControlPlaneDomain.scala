@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.domain
 
 /** 控制面领域模型：定义请求、操作、状态、事件、锁和验证证据等核心类型。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 
 import java.time.Instant

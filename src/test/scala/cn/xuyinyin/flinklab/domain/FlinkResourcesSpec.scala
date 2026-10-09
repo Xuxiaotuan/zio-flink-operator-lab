@@ -33,7 +33,7 @@ object FlinkResourcesSpec extends ZIOSpecDefault:
             FlinkStateSnapshotSpec(
               Namespace.unsafe("analytics"),
               DeploymentName.unsafe("orders-sp-1"),
-              cn.xuyinyin.flinklab.cli.ResourceKind.Deployment,
+              cn.xuyinyin.flinklab.domain.ResourceKind.Deployment,
               DeploymentName.unsafe("orders"),
               SnapshotType.Savepoint
             ).resource

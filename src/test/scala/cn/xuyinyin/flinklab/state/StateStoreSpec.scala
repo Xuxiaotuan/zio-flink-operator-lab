@@ -35,7 +35,7 @@ object StateStoreSpec extends ZIOSpecDefault:
     test("extracts a resource key and opaque resource version") {
       val record = StateRecord.fromJson(
         cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace.unsafe("analytics"),
-        cn.xuyinyin.flinklab.cli.ResourceKind.Deployment,
+        cn.xuyinyin.flinklab.domain.ResourceKind.Deployment,
         """{"metadata":{"name":"orders","resourceVersion":"007"},"status":{"state":"RUNNING"}}"""
       )
       assertTrue(

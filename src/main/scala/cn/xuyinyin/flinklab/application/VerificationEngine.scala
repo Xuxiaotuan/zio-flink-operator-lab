@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.application
 
 /** 结果验证器：只根据 Operator 返回的可观察证据判断操作是否完成，避免把“已提交”误报成“已成功”。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import cn.xuyinyin.flinklab.operator.observer.ResourceObservation

@@ -4,21 +4,21 @@
 
 ## 1. Scala 3 类型边界
 
-阅读 `domain/FlinkTypes.scala`、`domain/FlinkResources.scala` 和 `cli/Command.scala`。
+阅读 `domain/FlinkTypes.scala`、`domain/FlinkResources.scala` 和 `domain/ResourceKind.scala`。
 
 - opaque type 区分 namespace、资源名和 JAR URI。
 - extension method 提供领域值的受控读取。
 - enum 表示 Deployment、SessionJob、StateSnapshot 和快照类型。
 - `StateProtection`、`FallbackPolicy`、`OperationState` 和 `OperationEvent` 表示业务约束、状态机和审计历史。
-- `Either` 表示 CLI 和资源校验失败。
+- `Either` 表示 HTTP 请求和资源校验失败。
 - 用一个 JSON 编码练习理解 `given/using`，不把上下文参数扩散到服务边界。
 
 ## 2. ZIO 效果与依赖
 
-阅读 `OperatorProgram.execute` 和 `KubernetesApi`：
+阅读 `ServerProgram.run`、`KubernetesHttpApi` 和 `KubernetesApi`：
 
 ```scala
-def execute(command: Command): ZIO[KubernetesApi, Throwable, Unit]
+def handle(request: ApiRequest): IO[Throwable, ApiResponse]
 ```
 
 `KubernetesApi` 是环境，`Throwable` 是失败通道，`Unit` 是成功值。生产实现通过 `ZLayer` 提供，fake 实现用于测试。构造效果不会自动连接集群，只有运行时执行才会产生副作用。
@@ -36,7 +36,7 @@ def execute(command: Command): ZIO[KubernetesApi, Throwable, Unit]
 - `Schedule` 控制失败重试和 EOF 重连上限。
 - resourceVersion 是不透明字符串。
 
-可靠 watcher 还需要保存 list 的 resourceVersion，并在 410 Gone 后 relist；完成这部分后再把它纳入生产验收。
+可靠 watcher 已保存 list 的 resourceVersion，并在 410 Gone 后 relist；对应行为由 fake Kubernetes contract test 覆盖。
 
 ## 5. 快照与状态证据
 
@@ -53,7 +53,7 @@ def execute(command: Command): ZIO[KubernetesApi, Throwable, Unit]
 
 阅读 `domain/ControlPlaneDomain.scala`、`application/PolicyEngine.scala` 和 `operation/OperationStore.scala`：
 
-- `FlinkOperation` 把 CLI、HTTP 和未来 UI 的操作统一成同一个领域命令。
+- `FlinkOperation` 把 HTTP 请求统一成同一个领域命令。
 - `PolicyEngine` 把未验证操作转换成 `ValidatedOperation`。
 - `OperationStateMachine` 拒绝非法状态跳转，并保留 `Failed`、`TimedOut`、`Uncertain` 和 `Superseded`。
 - `OperationStore` 通过 ZIO `Ref` 保证单实例内的检查、转换和写入原子完成；生产多副本使用 Kubernetes `FlinkOperation` CR，裸机可切换 PostgreSQL，资源互斥使用带续租的 `FlinkOperationLock` CR。

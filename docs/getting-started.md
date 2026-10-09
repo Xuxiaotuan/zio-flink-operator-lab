@@ -1,6 +1,6 @@
 # 运行指南
 
-这份文档只描述一条流程：准备 Flink Job，使用 ZIO 提交 Operator CR，观察任务和快照状态。
+这份文档只描述一条流程：准备 Flink Job，启动 HTTP 控制面，通过 HTTP 提交 Operator CR，并观察任务和快照状态。
 
 ## 前置条件
 
@@ -28,78 +28,75 @@ mvn -B -f job/pom.xml package -DskipTests
 
 `job/target/zio-flink-wordcount-0.1.0.jar` 是示例 Job。提交前把它放进 Flink 镜像、挂载目录或受支持的远程 URI。
 
+## 启动 HTTP 控制面
+
+```sh
+sbt run
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+默认监听 `0.0.0.0:8080`。服务启动后，所有提交、查询、观察和快照请求都通过 HTTP API 完成。
+
+打开 [http://127.0.0.1:8080/](http://127.0.0.1:8080/) 可以使用浏览器工作台：
+
+- **总览**：读取当前 namespace 的 FlinkDeployment 和 FlinkStateSnapshot；
+- **作业**：查看 Job、checkpoint、savepoint 和 Operator 条件；
+- **发布**：执行 Kubernetes dry-run 或提交异步 `FlinkOperation`；
+- **操作记录**：按 `operationId` 轮询审计事件，区分 `ACCEPTED`、`COMPLETED`、`FAILED` 和 `UNCERTAIN`。
+
+浏览器只是 HTTP 客户端，不直接访问 Kubernetes。当前版本没有认证授权，服务只能部署在本机或受限内网。提交响应的 `202` 只代表请求已受理，不代表 Flink 作业已经完成。
+
 ## 提交 FlinkDeployment
 
-先生成资源，不连接集群：
+使用示例 JSON 提交 Application Cluster：
 
 ```sh
-sbt "run render deployment --name orders --namespace $FLINK_NAMESPACE"
+curl -fsS -X POST "http://127.0.0.1:8080/v1/deployments?namespace=$FLINK_NAMESPACE&requestId=orders-apply-1" \
+  -H 'Content-Type: application/json' \
+  --data @examples/flinkdeployment.json
 ```
 
-使用 API Server dry-run 检查 CR 和权限：
+响应中的 `operationId` 用于查询异步生命周期：
 
 ```sh
-sbt "run apply deployment --name orders --namespace $FLINK_NAMESPACE --dry-run"
+curl -fsS "http://127.0.0.1:8080/v1/operations/<operationId>"
+curl -fsS "http://127.0.0.1:8080/v1/state/deployment/orders?namespace=$FLINK_NAMESPACE"
 ```
 
-确认 dry-run 后提交：
-
-```sh
-sbt "run apply deployment \
-  --name orders \
-  --namespace $FLINK_NAMESPACE \
-  --image YOUR_FLINK_IMAGE \
-  --jar-uri local:///opt/flink/usrlib/zio-flink-wordcount-0.1.0.jar \
-  --entry-class cn.xuyinyin.flinklab.job.WordCountJob"
-```
-
-`--target-directory` 只用于首次 apply，为 Flink 写入 `state.savepoints.dir`。目录必须是 Flink Pod 可读写的持久存储。
+`FlinkDeployment.spec.job.jarURI` 必须是 Flink Pod 可访问的地址；`entryClass`、`parallelism` 和状态保护策略由 JSON 请求声明。
 
 ## 提交 SessionJob
 
-SessionJob 必须指向已经存在的 Session Cluster：
+SessionJob 请求使用 `POST /v1/session-jobs`，JSON 中声明已有 Session Cluster 和 Job 配置：
 
 ```sh
-sbt "run apply session-job \
-  --name orders-job \
-  --namespace $FLINK_NAMESPACE \
-  --deployment existing-session-cluster \
-  --jar-uri local:///opt/flink/usrlib/zio-flink-wordcount-0.1.0.jar \
-  --entry-class cn.xuyinyin.flinklab.job.WordCountJob"
+curl -fsS -X POST "http://127.0.0.1:8080/v1/session-jobs?namespace=$FLINK_NAMESPACE&requestId=orders-session-1" \
+  -H 'Content-Type: application/json' \
+  --data @examples/flinksessionjob.json
 ```
 
 ## 观察任务状态
 
 ```sh
-sbt "run status deployment --name orders --namespace $FLINK_NAMESPACE"
-sbt "run watch deployment --name orders --namespace $FLINK_NAMESPACE"
+curl -fsS "http://127.0.0.1:8080/v1/deployments/orders/status?namespace=$FLINK_NAMESPACE"
+curl -fsS "http://127.0.0.1:8080/v1/state?namespace=$FLINK_NAMESPACE"
 ```
 
-状态来源是 Flink CR 的 `status`。提交成功只代表 API Server 接受了期望状态；需要继续观察 Operator 生命周期、Job 状态、条件和错误。
+提交成功只代表 API Server 接受了期望状态；需要继续观察 Operator 生命周期、Job 状态、条件和错误。
 
 ## 请求 checkpoint 或 savepoint
 
 `FlinkStateSnapshot` 是统一的快照入口：
 
 ```sh
-sbt "run apply state-snapshot \
-  --name orders-savepoint \
-  --namespace $FLINK_NAMESPACE \
-  --target-kind deployment \
-  --target-name orders \
-  --snapshot-type savepoint"
+curl -fsS -X POST "http://127.0.0.1:8080/v1/snapshots?namespace=$FLINK_NAMESPACE&requestId=orders-savepoint-1" \
+  -H 'Content-Type: application/json' \
+  --data '{"targetKind":"deployment","targetName":"orders","snapshotName":"orders-savepoint","type":"savepoint"}'
 
-sbt "run watch state-snapshot --name orders-savepoint --namespace $FLINK_NAMESPACE"
+curl -fsS "http://127.0.0.1:8080/v1/operations/<operationId>"
+curl -fsS "http://127.0.0.1:8080/v1/snapshots/orders-savepoint?namespace=$FLINK_NAMESPACE"
 ```
 
-checkpoint 只需把 `--snapshot-type` 改成 `checkpoint`。快照请求的最终结果以 `FlinkStateSnapshot.status.state`、`path`、`error` 和 `failures` 为准。
+checkpoint 只需把 `type` 改成 `checkpoint`。最终结果以 `FlinkStateSnapshot.status.state`、`path`、`error` 和 `failures` 为准；RustFS 对象路径还需要在对象存储侧核对。
 
-旧的 `savepoint --nonce` 和 `suspend-savepoint` 命令仍保留为兼容入口；新流程使用 StateSnapshot CR。
-
-## 启动 HTTP 控制面
-
-```sh
-sbt "run serve"
-```
-
-默认监听 `0.0.0.0:8080`。HTTP 接口、状态字段和快照示例见 [状态监控](monitoring.md)。多副本部署见 [部署](deployment.md)。
+更多接口、状态字段和多副本部署见 [状态监控](monitoring.md) 与 [部署](deployment.md)。

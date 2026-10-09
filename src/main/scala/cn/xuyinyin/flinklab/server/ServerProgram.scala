@@ -59,7 +59,10 @@ object ServerProgram:
             )
             val response = Unsafe.unsafe { implicit unsafe =>
               Runtime.default.unsafe.run(
-                KubernetesHttpApi.handleWith(api, store, operationStore, worker, request, KubernetesHttpSettings.fromEnv(sys.env))
+                WebUi.handle(request).flatMap {
+                  case Some(response) => ZIO.succeed(response)
+                  case None => KubernetesHttpApi.handleWith(api, store, operationStore, worker, request, KubernetesHttpSettings.fromEnv(sys.env))
+                }
               ).getOrThrowFiberFailure()
             }
             val bytes = response.body.getBytes(StandardCharsets.UTF_8)

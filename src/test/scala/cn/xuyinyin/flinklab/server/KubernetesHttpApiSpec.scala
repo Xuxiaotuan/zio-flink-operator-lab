@@ -2,7 +2,6 @@ package cn.xuyinyin.flinklab.server
 /** 验证 HTTP 查询、状态、快照和 operation 生命周期接口。 */
 
 import cn.xuyinyin.flinklab.kubernetes.FakeKubernetesApi
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.operation.{AcceptedOperation, AsyncOperationWorker}
 import cn.xuyinyin.flinklab.operation.InMemoryOperationStore

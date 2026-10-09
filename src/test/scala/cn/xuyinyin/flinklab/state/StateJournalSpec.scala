@@ -1,7 +1,7 @@
 package cn.xuyinyin.flinklab.state
 /** 验证状态历史去重、删除审计和历史长度上限。 */
 
-import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import zio.test.*
 

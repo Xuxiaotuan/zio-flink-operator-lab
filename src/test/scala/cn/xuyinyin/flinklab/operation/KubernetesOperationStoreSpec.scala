@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 /** 验证 FlinkOperation CR 的持久化和 resourceVersion 更新契约。 */
 
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi

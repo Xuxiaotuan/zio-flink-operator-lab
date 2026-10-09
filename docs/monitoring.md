@@ -1,64 +1,43 @@
 # 状态监控
 
-监控分为两类：Flink 作业 CR 的运行状态，以及 `FlinkStateSnapshot` 的 checkpoint/savepoint 请求状态。
+监控分为两类：Flink 作业 CR 的运行状态，以及 `FlinkStateSnapshot` 的 checkpoint/savepoint 请求状态。所有操作通过 HTTP API 完成。
 
 状态数据流见 [数据流图](diagrams/dataflow.html)，组件关系见 [架构图](diagrams/architecture.html)。
 
-## CLI
-
-查询资源的完整 CR：
-
-```sh
-sbt "run status deployment --name orders --namespace flink-lineage-test"
-sbt "run status session-job --name orders-job --namespace flink-lineage-test"
-sbt "run status state-snapshot --name orders-savepoint --namespace flink-lineage-test"
-```
-
-持续观察任务和快照：
-
-```sh
-sbt "run watch deployment --name orders --namespace flink-lineage-test"
-sbt "run watch session-job --name orders-job --namespace flink-lineage-test"
-sbt "run watch state-snapshot --name orders-savepoint --namespace flink-lineage-test"
-```
-
-watch 输出是状态投影，不代表业务输出已经正确。需要同时检查 Job 状态、Pod、业务结果和快照路径。
-
-## HTTP
+## HTTP 查询
 
 服务端口提供规范化状态：
 
 ```sh
-curl -fsS 'http://127.0.0.1:18080/v1/deployments/orders/status?namespace=flink-lineage-test'
-curl -fsS 'http://127.0.0.1:18080/v1/deployments?namespace=flink-lineage-test'
-curl -fsS 'http://127.0.0.1:18080/v1/snapshots/orders-savepoint?namespace=flink-lineage-test'
-curl -fsS 'http://127.0.0.1:18080/v1/snapshots?namespace=flink-lineage-test'
-curl -fsS 'http://127.0.0.1:18080/v1/state?namespace=flink-lineage-test'
-curl -fsS 'http://127.0.0.1:18080/v1/state/deployment/orders?namespace=flink-lineage-test'
-curl -fsS -X DELETE 'http://127.0.0.1:18080/v1/snapshots/orders-savepoint?namespace=flink-lineage-test'
+curl -fsS 'http://127.0.0.1:8080/v1/deployments/orders/status?namespace=flink-lineage-test'
+curl -fsS 'http://127.0.0.1:8080/v1/deployments?namespace=flink-lineage-test'
+curl -fsS 'http://127.0.0.1:8080/v1/snapshots/orders-savepoint?namespace=flink-lineage-test'
+curl -fsS 'http://127.0.0.1:8080/v1/snapshots?namespace=flink-lineage-test'
+curl -fsS 'http://127.0.0.1:8080/v1/state?namespace=flink-lineage-test'
+curl -fsS 'http://127.0.0.1:8080/v1/state/deployment/orders?namespace=flink-lineage-test'
 ```
 
-`/v1/state` 返回当前配置的后端：Kubernetes 模式直接读取三类 Flink CR；PostgreSQL 模式返回共享表中的最新观测和 `history` 生命周期事件。服务启动后，每个副本都会按 `ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS`（默认 15 秒）读取三类 CR；轮询只读 Kubernetes，重复写入通过资源版本和幂等 upsert 合并。它用于检查多个服务副本是否读取同一份状态，不替代 Operator 的 CR 状态。
+`/v1/state` 返回当前配置的后端：Kubernetes 模式直接读取三类 Flink CR；PostgreSQL 模式返回共享表中的最新观测和 `history` 生命周期事件。服务启动后，每个副本都会按 `ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS`（默认 15 秒）读取三类 CR；轮询只读 Kubernetes，重复写入通过资源版本和幂等 upsert 合并。
 
 提交 FlinkDeployment、快照、suspend 和 delete 都先返回 `202` 与 `operationId`，worker 再推进 Kubernetes reconcile 和 verification。相同 `requestId` 重试会返回同一个 `operationId`：
 
 ```sh
-curl -fsS -X POST 'http://127.0.0.1:18080/v1/deployments?namespace=flink-lineage-test&dryRun=true' \
+curl -fsS -X POST 'http://127.0.0.1:8080/v1/deployments?namespace=flink-lineage-test&requestId=orders-apply-1' \
   -H 'Content-Type: application/json' \
   --data @examples/flinkdeployment.json
 
-curl -fsS 'http://127.0.0.1:18080/v1/operations/<operationId>'
+curl -fsS 'http://127.0.0.1:8080/v1/operations/<operationId>'
 ```
 
 创建 checkpoint 或 savepoint 请求：
 
 ```sh
-curl -fsS -X POST 'http://127.0.0.1:18080/v1/snapshots?namespace=flink-lineage-test' \
+curl -fsS -X POST 'http://127.0.0.1:8080/v1/snapshots?namespace=flink-lineage-test&requestId=orders-savepoint-1' \
   -H 'Content-Type: application/json' \
   --data '{"targetKind":"deployment","targetName":"orders","snapshotName":"orders-savepoint","type":"savepoint"}'
 ```
 
-`type` 可以是 `savepoint` 或 `checkpoint`。请求被控制面接受后返回 `operationId`；最终结果先读取 `/v1/operations/<operationId>` 的生命周期，再读取对应 `FlinkStateSnapshot.status`。`COMPLETED` 只表示这次 operation 对应的资源证据已经满足校验；`TIMEDOUT` 表示在等待窗口内没有得到证据，`UNCERTAIN` 表示 Kubernetes 写请求结果不确定，需要人工或后续观察确认。
+`type` 可以是 `savepoint` 或 `checkpoint`。`COMPLETED` 只表示这次 operation 对应的资源证据已经满足校验；`TIMEDOUT` 表示在等待窗口内没有得到证据，`UNCERTAIN` 表示 Kubernetes 写请求结果不确定，需要后续观察确认。
 
 ## 字段含义
 
@@ -70,8 +49,8 @@ curl -fsS -X POST 'http://127.0.0.1:18080/v1/snapshots?namespace=flink-lineage-t
 | `conditions` / `error` | Flink CR | Operator 条件和错误信息 |
 | `checkpoint` | `status.jobStatus.checkpointInfo` | 最近 checkpoint 的触发信息和时间摘要 |
 | `savepoint` | `status.jobStatus.savepointInfo` | 最后 savepoint、路径、触发信息和历史摘要 |
-| `path` | FlinkStateSnapshot.status | 本次快照完成路径 |
-| `state` / `failures` | FlinkStateSnapshot.status | 本次快照状态和失败信息 |
+| `path` | `FlinkStateSnapshot.status` | 本次快照完成路径 |
+| `state` / `failures` | `FlinkStateSnapshot.status` | 本次快照状态和失败信息 |
 
 `/v1/state` 中每个 item 还包含：
 

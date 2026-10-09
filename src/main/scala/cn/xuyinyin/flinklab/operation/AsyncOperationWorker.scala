@@ -2,7 +2,6 @@ package cn.xuyinyin.flinklab.operation
 
 /** 异步操作 worker：负责操作生命周期、锁、提交、观察、验证、超时和故障恢复。 */
 import cn.xuyinyin.flinklab.application.{DefaultPolicyEngine, DefaultVerificationEngine, Evidence, PolicyEngine, VerificationEngine}
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import cn.xuyinyin.flinklab.kubernetes.{KubernetesApi, KubernetesApiError}

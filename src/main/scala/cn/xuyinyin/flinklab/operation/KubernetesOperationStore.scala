@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 
 /** Kubernetes OperationStore：把 operation 序列化到 FlinkOperation CR，并用 resourceVersion 做跨副本条件更新。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import cn.xuyinyin.flinklab.kubernetes.{KubernetesApi, KubernetesApiError}

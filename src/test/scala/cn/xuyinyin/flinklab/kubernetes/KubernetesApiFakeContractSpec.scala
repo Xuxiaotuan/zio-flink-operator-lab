@@ -1,9 +1,9 @@
 package cn.xuyinyin.flinklab.kubernetes
-/** 验证业务调用经过 KubernetesApi 端口时使用正确的资源、路径和请求体。 */
 
-import cn.xuyinyin.flinklab.cli.*
+/** 验证 HTTP 控制面最终依赖的 KubernetesApi 端口使用正确的资源、路径和请求体。 */
+
+import cn.xuyinyin.flinklab.domain.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
-import cn.xuyinyin.flinklab.operator.OperatorProgram
 import cn.xuyinyin.flinklab.operator.watch.WatchEventType
 import zio.*
 import zio.test.*
@@ -14,9 +14,11 @@ object KubernetesApiFakeContractSpec extends ZIOSpecDefault:
       test("apply sends the requested CR identity and JSON body") {
         for
           fake <- FakeKubernetesApi.make
-          _ <- OperatorProgram.execute(
-            Command.Apply(ResourceKind.Deployment, Map("name" -> "orders", "namespace" -> "analytics"), dryRun = true)
-          ).provide(ZLayer.succeed(fake))
+          _ <- fake.apply(
+            Namespace.unsafe("analytics"),
+            """{"apiVersion":"flink.apache.org/v1beta1","kind":"FlinkDeployment","metadata":{"name":"orders"},"spec":{}}""",
+            dryRun = true
+          )
           records <- fake.records.get
         yield assertTrue(
           records.exists(_.startsWith("apply:analytics:flinkdeployment:orders:")),
@@ -26,12 +28,7 @@ object KubernetesApiFakeContractSpec extends ZIOSpecDefault:
       test("savepoint sends an exact merge patch to the fake client") {
         for
           fake <- FakeKubernetesApi.make
-          _ <- OperatorProgram.execute(
-            Command.Savepoint(
-              ResourceKind.Deployment,
-              Map("name" -> "orders", "namespace" -> "analytics", "nonce" -> "42")
-            )
-          ).provide(ZLayer.succeed(fake))
+          _ <- fake.patch(Namespace.unsafe("analytics"), ResourceKind.Deployment, "orders", "{\"spec\":{\"savepointTriggerNonce\":42}}")
           records <- fake.records.get
           patch = records.find(_.startsWith("patch:")).getOrElse("")
         yield assertTrue(

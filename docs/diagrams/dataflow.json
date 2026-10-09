@@ -16,14 +16,14 @@
     {"label": "统一状态与输出"}
   ],
   "nodes": [
-    {"id": "request", "type": "frontend", "label": "CLI / HTTP", "sublabel": "commands", "stage": 0, "row": 0, "width": 150},
+    {"id": "request", "type": "frontend", "label": "HTTP API", "sublabel": "JSON requests", "stage": 0, "row": 0, "width": 150},
     {"id": "resource", "type": "backend", "label": "Flink CR", "sublabel": "Deployment / SessionJob", "stage": 1, "row": 0, "width": 160},
     {"id": "snapshot", "type": "backend", "label": "Snapshot CR", "sublabel": "checkpoint / savepoint", "stage": 1, "row": 1, "width": 160},
     {"id": "operator", "type": "backend", "label": "Flink Operator", "sublabel": "reconcile", "stage": 2, "row": 0, "width": 160},
     {"id": "job", "type": "backend", "label": "Flink Job", "sublabel": "JobManager / TaskManager", "stage": 3, "row": 0, "width": 160},
     {"id": "result", "type": "cloud", "label": "Snapshot Result", "sublabel": "RustFS path + CR status", "stage": 3, "row": 1, "width": 180},
     {"id": "state", "type": "database", "label": "StateStore", "sublabel": "Kubernetes CR / PostgreSQL", "stage": 4, "row": 0, "width": 160},
-    {"id": "status", "type": "frontend", "label": "Status Projection", "sublabel": "normalized CLI / HTTP output", "stage": 4, "row": 1, "width": 180}
+    {"id": "status", "type": "frontend", "label": "Status Projection", "sublabel": "normalized HTTP output", "stage": 4, "row": 1, "width": 180}
   ],
   "flows": [
     {"id": "d1", "from": "request", "to": "resource", "label": "apply", "variant": "emphasis", "route": "straight"},

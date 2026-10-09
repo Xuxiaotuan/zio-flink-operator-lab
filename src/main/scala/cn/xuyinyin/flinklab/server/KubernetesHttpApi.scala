@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.server
 
 /** HTTP 控制面：将外部请求路由为查询或类型化 FlinkOperation，变更请求统一交给 AsyncOperationWorker。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.operator.savepoint.SavepointPatch

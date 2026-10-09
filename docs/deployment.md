@@ -11,7 +11,7 @@ Client -> Service -> zio-flink-operator replicas -> Kubernetes API Server
                                       Flink Kubernetes Operator
 ```
 
-HTTP 副本处理请求；每个写操作由异步 worker 通过 ResourceObserver 观察目标 CR。Kubernetes 部署默认把操作审计写入 `FlinkOperation` CR，副本通过同一个 API Server 共享状态；裸机或外部审计场景才显式选择 PostgreSQL。CLI watch 仍用于显式观察资源。
+HTTP 副本处理请求；每个写操作由异步 worker 通过 ResourceObserver 观察目标 CR。Kubernetes 部署默认把操作审计写入 `FlinkOperation` CR，副本通过同一个 API Server 共享状态；裸机或外部审计场景才显式选择 PostgreSQL。HTTP 查询接口用于显式观察资源。
 
 ## 本地 Kubernetes
 
@@ -82,15 +82,23 @@ s3://flink-savepoints/zio-flink-operator/local/orbstack/flink-lineage-test/
 
 `deploy/local/rustfs-secret.example.yaml` 只有字段模板和占位符，不能直接作为真实 Secret 使用。checkpoint 与 savepoint 使用不同的存储生命周期，不能把两者混成一个验收结果。
 
-## HTTP 控制面
+## HTTP 控制面和浏览器工作台
 
 直接运行：
 
 ```sh
-sbt "run serve"
+sbt run
 ```
 
-容器入口已经是 `serve`。服务默认监听 `0.0.0.0:8080`，相关接口见 [状态监控](monitoring.md)。
+容器入口直接启动 HTTP 服务。服务默认监听 `0.0.0.0:8080`。浏览器工作台和 API 共用这个端口：
+
+```text
+http://127.0.0.1:8080/
+```
+
+前端静态资源由 assembly 打进同一个 JAR，不部署第二个前端服务。工作台通过 `/v1/deployments`、`/v1/snapshots`、`/v1/state` 和 `/v1/operations/{id}` 读取状态，通过 HTTP POST 触发操作，并用有界轮询观察 Operation；初始 `202 ACCEPTED` 不会被显示为完成。
+
+当前版本没有认证和授权。生产或共享集群必须使用私有 Service/Ingress、NetworkPolicy 或其他网络边界，只允许受信任的运维网络访问。相关字段见 [状态监控](monitoring.md)。
 
 ## 裸机 PostgreSQL 状态
 
@@ -104,7 +112,7 @@ export POSTGRES_PORT=30660
 export POSTGRES_DB=xxt
 export POSTGRES_USER=root
 export POSTGRES_PASSWORD='由 Secret 注入'
-sbt "run serve"
+sbt run
 ```
 
 服务首次启动会创建 `zio_flink_operator_state` 和 `zio_flink_operations` 表。前者保存 CR 状态观测，后者保存操作状态和审计事件；checkpoint/savepoint 文件仍由 Flink 写入 RustFS。

@@ -1,7 +1,7 @@
 package cn.xuyinyin.flinklab.kubernetes
 /** 验证 Java Client 适配器对 Kubernetes HTTP API 的路径、patch、重试和错误分类。 */
 
-import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.domain.ResourceUid
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}

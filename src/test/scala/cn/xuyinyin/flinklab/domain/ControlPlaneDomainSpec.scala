@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.domain
 /** 验证领域模型、事件审计 JSON 和操作状态机。 */
 
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.ControlPlaneError.InvalidTransition
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import cn.xuyinyin.flinklab.operation.OperationCodec

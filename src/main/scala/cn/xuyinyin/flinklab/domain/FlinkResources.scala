@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.domain
 
 /** Flink Kubernetes 资源模型：将类型化的作业配置渲染为 Flink Operator 所需的 CR JSON。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import ujson.*
 

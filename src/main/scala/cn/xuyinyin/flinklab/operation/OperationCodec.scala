@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 
 /** Operation 编解码器：在领域事件和 FlinkOperation CR 的 JSON 之间保持可审计的双向转换。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 

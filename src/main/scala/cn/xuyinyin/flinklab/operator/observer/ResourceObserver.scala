@@ -1,7 +1,7 @@
 package cn.xuyinyin.flinklab.operator.observer
 
 /** 资源观察器：执行 list → watch，处理 resourceVersion、410 Gone 重列和断线重连。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.{KubernetesApi, KubernetesApiError}
 import cn.xuyinyin.flinklab.operator.watch.{WatchEvent, WatchEventType}

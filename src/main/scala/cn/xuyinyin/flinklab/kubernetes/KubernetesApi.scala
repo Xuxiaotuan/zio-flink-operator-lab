@@ -1,7 +1,7 @@
 package cn.xuyinyin.flinklab.kubernetes
 
 /** Kubernetes API 端口和生产适配器：所有 Flink CR 的读写、watch、重试都从这里进入 Kubernetes API Server。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.domain.{ResourceUid, resourceUidValue}
 import cn.xuyinyin.flinklab.operator.watch.{WatchEvent, WatchEventType}

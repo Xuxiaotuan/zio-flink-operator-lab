@@ -77,7 +77,7 @@ final class DefaultFlinkControlPlane(store: OperationStore) extends FlinkControl
   override def accept(requestId: RequestId, operation: FlinkOperation): IO[ControlPlaneError, AcceptedOperation] =
     val now = java.time.Instant.now()
     val resource = operation match
-      case FlinkOperation.Deploy(spec)         => ResourceRef(spec.namespace, cn.xuyinyin.flinklab.cli.ResourceKind.Deployment, spec.name)
+      case FlinkOperation.Deploy(spec)         => ResourceRef(spec.namespace, cn.xuyinyin.flinklab.domain.ResourceKind.Deployment, spec.name)
       case FlinkOperation.Upgrade(target, _, _) => target
       case FlinkOperation.Suspend(target, _)    => target
       case FlinkOperation.Resume(target)        => target

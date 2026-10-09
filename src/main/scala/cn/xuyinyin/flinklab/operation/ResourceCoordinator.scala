@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 
 /** 资源互斥协调器：通过 FlinkOperationLock CR 为同一 Flink 资源建立可续租、可接管的租约。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import cn.xuyinyin.flinklab.kubernetes.{KubernetesApi, KubernetesApiError}

@@ -1,7 +1,7 @@
 package cn.xuyinyin.flinklab.state
 
 /** 状态轮询器：定期读取 Kubernetes CR，并把最新状态合并到选定的共享状态后端。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import zio.*

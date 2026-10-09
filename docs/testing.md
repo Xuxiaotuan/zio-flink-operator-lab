@@ -11,20 +11,20 @@ sbt -batch assembly
 mvn -B -f job/pom.xml package -DskipTests
 ```
 
-当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、CLI/HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
+当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
 
-本轮实际结果：`sbt -batch test` 通过 112 个测试；`sbt -batch assembly` 成功生成 assembly（SHA-1 `f1550e37275e4f8cf5154e82762d9b2a2c9c52d2`）；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
+本轮实际结果：`sbt -batch test` 通过 104 个测试；`sbt -batch assembly` 成功生成 assembly（SHA-1 `64c16508b960d411937c5d81538cc96cea45bda7`）；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复、单副本故障演练、锁租约接管和 PostgreSQL 双节点运行已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。控制面压力与长稳测试的结果记录在本页最新现场验收中。
 
 现场验收记录：StatefulCounterJob 的现场验收使用 PipelineRun #27（`zio-flink-operator-lab-wjclx`）构建的 Stateful Job 镜像，已通过 RustFS checkpoint、FlinkStateSnapshot savepoint 和新 Deployment 的 `initialSavepointPath` 恢复；checkpoint REST 记录多次 `COMPLETED`，savepoint `s3://flink-savepoints/zio-e2e/savepoints/savepoint-26cb8d-c93fc0e044c9` 的 RustFS `_metadata` HEAD 返回 200。原任务挂起前计数 `115921`，恢复任务日志达到 `116404`，JobManager 同时记录了 `Restoring job ... from Savepoint`。使用默认 180 秒窗口复验的 `zio-e2e-restore3` operation 进入 `COMPLETED`，观察到 `RUNNING/DEPLOYED`。
 
 现场故障演练：删除 xjw 节点上的一个控制面 Pod 后，xxt 节点副本持续返回 `{"status":"ok"}`，Deployment 自动补回 xjw 副本并恢复 `2/2`；Flink 作业和 Kubernetes CR 未受影响。
-- 覆盖 CLI/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段、回退审计、锁租约续期与接管、重试策略。
+- 覆盖 HTTP/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段、回退审计、锁租约续期与接管、重试策略。
 - Maven Job：应以本轮命令的 `BUILD SUCCESS` 为准。
 - `job/target/zio-flink-wordcount-0.1.0.jar` 同时包含 `StatefulCounterJob`；目标集群现场测试应使用 `examples/flinkdeployment-stateful.json`，确认 checkpoint 计数、savepoint `status.path` 和恢复后 `stateful-counter` 日志连续。
 
-测试按职责分组：CLI/domain、typed control-plane、policy、operation store/worker、operation factory、ResourceObserver、fake Kubernetes API、HTTP contract、watch/retry、状态后端和状态轮询。
+测试按职责分组：HTTP/domain、typed control-plane、policy、operation store/worker、operation factory、ResourceObserver、fake Kubernetes API、HTTP contract、watch/retry、状态后端和状态轮询。
 
 这些测试默认不连接真实 Kubernetes。HTTP contract test 使用本地 HTTP server，只验证 Kubernetes Java Client 的请求协议。
 
@@ -71,7 +71,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 | 层级 | 能证明 | 不能证明 |
 | --- | --- | --- |
-| Scala/domain/CLI | 参数、资源 JSON、快照类型和 patch | API Server 接受资源 |
+| Scala/domain/HTTP | 参数、资源 JSON、快照类型和 patch | API Server 接受资源 |
 | Fake Kubernetes API | 业务调用的资源类型、namespace、name、body 和顺序 | Java Client 的真实 HTTP 请求 |
 | HTTP wire contract | SSA、merge patch、list/get/delete、重试和错误分类 | 当前集群权限、CRD 版本和 Operator 行为 |
 | HTTP control-plane tests | deployment status、snapshot create/list/get/delete、状态字段序列化 | 真实 Flink 作业和快照结果 |

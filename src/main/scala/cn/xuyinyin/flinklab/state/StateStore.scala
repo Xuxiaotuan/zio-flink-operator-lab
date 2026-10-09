@@ -1,7 +1,7 @@
 package cn.xuyinyin.flinklab.state
 
 /** 状态后端：定义 Kubernetes CR 和 PostgreSQL 两种状态读取/审计存储，并维护有限生命周期历史。 */
-import cn.xuyinyin.flinklab.cli.ResourceKind
+import cn.xuyinyin.flinklab.domain.ResourceKind
 import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import zio.*

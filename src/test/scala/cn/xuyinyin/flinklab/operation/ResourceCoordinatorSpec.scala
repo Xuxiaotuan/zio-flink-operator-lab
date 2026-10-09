@@ -1,7 +1,6 @@
 package cn.xuyinyin.flinklab.operation
 /** 验证锁租约创建、过期接管、续租和 UID 保护释放。 */
 
-import cn.xuyinyin.flinklab.cli.ResourceKind
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 import cn.xuyinyin.flinklab.kubernetes.{KubernetesApi, KubernetesApiError}

@@ -1,31 +1,11 @@
 package cn.xuyinyin.flinklab.application
 
-/** 应用层命令工厂：把 CLI/HTTP 输入转换成统一的 FlinkOperation，确保不同入口共享同一套校验和执行协议。 */
-import cn.xuyinyin.flinklab.cli.{Command, ResourceKind}
+/** 应用层 HTTP 工厂：把 JSON 请求转换成统一的 FlinkOperation。 */
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.domain.FlinkTypes.*
 
 /** Converts every external command into the same typed domain operation. */
 object FlinkOperationFactory:
-  /** CLI 入口统一转换为领域操作，后续由 worker 执行。 */
-  def fromCommand(command: Command): Either[String, FlinkOperation] = command match
-    case Command.Apply(kind, options, _) =>
-      kind match
-        case ResourceKind.Deployment => deploymentFromOptions(options).map(FlinkOperation.Deploy.apply)
-        case ResourceKind.StateSnapshot => snapshotFromOptions(options).map { case (target, policy) => FlinkOperation.Snapshot(target, policy) }
-        case ResourceKind.SessionJob => Left("session-job operations are not yet represented by the typed control-plane command")
-        case ResourceKind.Operation | ResourceKind.OperationLock => Left("operation resources are managed by the control plane")
-    case Command.Upgrade(kind, options) if kind == ResourceKind.Deployment =>
-      for
-        spec <- deploymentFromOptions(options)
-        target <- targetFromOptions(options)
-        policy <- upgradePolicyFromOptions(options)
-      yield FlinkOperation.Upgrade(target, spec, policy)
-    case Command.Resume(kind, options) if kind == ResourceKind.Deployment => targetFromOptions(options).map(FlinkOperation.Resume.apply)
-    case Command.Restart(kind, options) if kind == ResourceKind.Deployment =>
-      for target <- targetFromOptions(options); policy <- upgradePolicyFromOptions(options) yield FlinkOperation.Restart(target, policy)
-    case _ => Left("only apply commands produce a FlinkOperation")
-
   /** 解析 HTTP 提交的 FlinkDeployment，并拒绝未声明的字段。 */
   def fromDeploymentJson(namespace: String, raw: String): Either[String, FlinkOperation] =
     for
@@ -70,54 +50,6 @@ object FlinkOperationFactory:
       snapshotName <- value.obj.get("snapshotName").flatMap(_.strOpt).filter(_.nonEmpty).map(value => DeploymentName.from(value).map(Some(_))).getOrElse(Right(None))
       resolvedNamespace <- Namespace.from(namespace)
     yield FlinkOperation.Snapshot(ResourceRef(resolvedNamespace, targetKind, targetName), SnapshotPolicy(snapshotType, snapshotName))
-
-  // CLI 选项和环境变量只在边界层读取，进入领域模型后不再依赖环境。
-  private def deploymentFromOptions(options: Map[String, String]): Either[String, FlinkDeploymentSpec] =
-    for
-      namespace <- Namespace.from(options.getOrElse("namespace", sys.env.getOrElse("FLINK_NAMESPACE", "default")))
-      name <- DeploymentName.from(options.getOrElse("name", "word-count"))
-      jar <- JobJarUri.from(options.getOrElse("jar-uri", sys.env.getOrElse("FLINK_JOB_JAR_URI", "local:///opt/flink/examples/streaming/WordCount.jar")))
-      parallelism = options.get("parallelism").orElse(sys.env.get("FLINK_PARALLELISM")).flatMap(_.toIntOption).filter(_ > 0).getOrElse(1)
-      protection <- StateProtection.parse(options.getOrElse("upgrade-mode", "stateless"))
-    yield FlinkDeploymentSpec(
-      namespace,
-      name,
-      options.getOrElse("image", sys.env.getOrElse("FLINK_IMAGE", "flink:1.20.1")),
-      options.getOrElse("flink-version", sys.env.getOrElse("FLINK_VERSION", "v1_20")),
-      FlinkJob(jar, options.getOrElse("entry-class", sys.env.getOrElse("FLINK_ENTRY_CLASS", "org.apache.flink.streaming.examples.wordcount.WordCount")), parallelism, protection),
-      options.get("service-account").orElse(sys.env.get("FLINK_SERVICE_ACCOUNT")),
-      options.get("target-directory").orElse(sys.env.get("FLINK_SAVEPOINT_DIRECTORY"))
-    )
-
-  private def snapshotFromOptions(options: Map[String, String]): Either[String, (ResourceRef, SnapshotPolicy)] =
-    for
-      namespace <- Namespace.from(options.getOrElse("namespace", sys.env.getOrElse("FLINK_NAMESPACE", "default")))
-      kind <- options.get("target-kind").toRight("target-kind is required").flatMap(parseKind)
-      name <- DeploymentName.from(options.getOrElse("target-name", "word-count"))
-      snapshotType <- SnapshotType.parse(options.getOrElse("snapshot-type", "savepoint"))
-      snapshotName <- options.get("name").map(DeploymentName.from).map(_.map(Some(_))).getOrElse(Right(None))
-    yield (ResourceRef(namespace, kind, name), SnapshotPolicy(snapshotType, snapshotName))
-
-  private def targetFromOptions(options: Map[String, String]): Either[String, ResourceRef] =
-    for
-      namespace <- Namespace.from(options.getOrElse("namespace", sys.env.getOrElse("FLINK_NAMESPACE", "default")))
-      name <- DeploymentName.from(options.getOrElse("name", "word-count"))
-    yield ResourceRef(namespace, ResourceKind.Deployment, name)
-
-  // upgrade-mode 与 fallback 必须组合校验，避免产生互相矛盾的策略。
-  private def upgradePolicyFromOptions(options: Map[String, String]): Either[String, UpgradePolicy] =
-    for
-      protection <- StateProtection.parse(options.getOrElse("upgrade-mode", "stateless"))
-      fallback <- options.get("fallback").map(parseFallback).getOrElse(Right(FallbackPolicy.Forbidden))
-      policy = UpgradePolicy(protection, fallback)
-      _ <- policy.validate.left.map(_.message)
-    yield policy
-
-  private def parseFallback(value: String): Either[String, FallbackPolicy] =
-    value.trim.toLowerCase match
-      case "forbidden" => Right(FallbackPolicy.Forbidden)
-      case "allow-last-state" | "allowlaststate" => Right(FallbackPolicy.AllowLastState)
-      case other => Left(s"unknown fallback policy: $other (use forbidden or allow-last-state)")
 
   private def parseKind(value: String): Either[String, ResourceKind] =
     value match

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="HTTP-only ZIO Flink Kubernetes Operator control plane">
+  <title>ZIO Flink Platform</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <aside class="rail">
+    <a class="brand" href="#overview"><span class="brand-mark">Z</span><span>ZIO Flink<small>运行工作台</small></span></a>
+    <nav aria-label="主导航">
+      <a href="#overview" data-view="overview">总览<span>Overview</span></a>
+      <a href="#jobs" data-view="jobs">作业<span>Jobs</span></a>
+      <a href="#publish" data-view="publish">发布<span>Publish</span></a>
+      <a href="#operations" data-view="operations">操作记录<span>Operations</span></a>
+    </nav>
+    <p class="rail-note">Flink Kubernetes Operator<br>HTTP 控制面</p>
+  </aside>
+  <main>
+    <header class="topbar">
+      <div class="location">工作空间 / <strong id="current-view">总览</strong></div>
+      <form id="namespace-form" class="scope-form">
+        <label for="namespace">Namespace</label>
+        <input id="namespace" name="namespace" value="default" required autocomplete="off" spellcheck="false">
+        <button type="submit" id="refresh">刷新</button>
+      </form>
+    </header>
+    <section id="overview" class="view">
+      <div class="page-heading"><div><h1>运行总览</h1><p>从 Operator 状态观察作业，从操作证据确认结果。</p></div><span id="updated" class="muted">尚未刷新</span></div>
+      <div id="overview-message" class="message" role="status" aria-live="polite">正在连接服务…</div>
+      <div class="metrics">
+        <article><span>Deployment</span><strong id="metric-total">—</strong><small>当前 namespace</small></article>
+        <article><span>RUNNING</span><strong id="metric-running">—</strong><small>Job 实际状态</small></article>
+        <article><span>异常</span><strong id="metric-failed">—</strong><small>FAILED / ERROR</small></article>
+        <article><span>Snapshot CR</span><strong id="metric-snapshots">—</strong><small>不等于对象存储验证</small></article>
+      </div>
+      <div class="panel"><div class="panel-heading"><h2>作业状态</h2><a href="#jobs">查看作业 →</a></div><div id="overview-jobs" class="empty">尚未获得作业状态。</div></div>
+      <div class="note">请求被接受后，后台继续 reconcile 和验证。<code>ACCEPTED</code> 仅表示操作已受理；最终结果请查看 Operation。</div>
+    </section>
+    <section id="jobs" class="view" hidden>
+      <div class="page-heading"><div><h1>Flink 作业</h1><p>查看 Deployment、checkpoint 与 savepoint 的 Operator 状态摘要。</p></div><a class="button primary" href="#publish">发布作业</a></div>
+      <div id="jobs-message" class="message" role="status" aria-live="polite"></div>
+      <div class="workbench">
+        <div class="panel"><div class="panel-heading"><h2>Deployment</h2><span id="jobs-count" class="muted">—</span></div><div id="job-list" class="empty">尚未获得作业列表。</div></div>
+        <div class="panel"><div class="panel-heading"><h2 id="job-title">作业详情</h2></div><div id="job-details" class="empty">选择一个作业查看状态。</div>
+          <div id="job-actions" hidden>
+            <label for="action-request-id">操作 requestId</label><input id="action-request-id" placeholder="为空时自动生成；重试复用同一值" spellcheck="false">
+            <div class="actions"><button data-action="savepoint">Savepoint</button><button data-action="suspend-savepoint">保留状态暂停</button><button data-action="resume">恢复运行</button><button data-action="restart">Savepoint 重启</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel snapshots"><div class="panel-heading"><h2>快照状态</h2></div><div id="snapshot-list" class="empty">尚未获得快照状态。</div></div>
+    </section>
+    <section id="publish" class="view" hidden>
+      <div class="page-heading"><div><h1>发布作业</h1><p>提交 FlinkDeployment 声明，后台执行策略校验、提交和结果验证。</p></div></div>
+      <form id="publish-form" class="panel publish-form">
+        <div class="form-row"><div><label for="publish-mode">操作类型</label><select id="publish-mode"><option value="deploy">创建 Deployment</option><option value="upgrade">升级 Deployment</option></select></div><div><label for="publish-request-id">requestId</label><input id="publish-request-id" placeholder="为空时自动生成" spellcheck="false"></div></div>
+        <label for="manifest">FlinkDeployment JSON</label>
+        <textarea id="manifest" rows="20" required spellcheck="false" aria-describedby="manifest-help"></textarea>
+        <p id="manifest-help" class="muted">使用匹配集群版本的镜像与 jarURI。升级策略来自 spec.job.upgradeMode；前端不允许隐式 fallback。</p>
+        <div class="actions"><button type="button" id="dry-run">Kubernetes dry-run</button><button type="submit" class="primary" id="submit-publish">提交操作</button></div>
+        <div id="publish-message" class="message" role="status" aria-live="polite"></div>
+        <details id="dry-run-result" hidden><summary>查看 dry-run 返回值</summary><pre id="dry-run-json"></pre></details>
+      </form>
+    </section>
+    <section id="operations" class="view" hidden>
+      <div class="page-heading"><div><h1>操作记录与证据</h1><p>按 operationId 查询持久化记录。请求受理和操作完成分别展示。</p></div></div>
+      <form id="operation-form" class="panel lookup"><label for="operation-id">operationId</label><div class="inline"><input id="operation-id" required spellcheck="false" placeholder="输入操作 ID"><button type="submit">查询</button><button type="button" id="stop-poll" disabled>停止观察</button></div></form>
+      <div id="operation-message" class="message" role="status" aria-live="polite">提交操作后会自动跳转到这里。</div>
+      <div id="operation-result"></div>
+    </section>
+    <footer>所有作业变更经过 <code>FlinkOperation</code> · API <code>/v1/deployments</code> · 操作身份 <code>operationId</code></footer>
+  </main>
+</body>
+</html>
