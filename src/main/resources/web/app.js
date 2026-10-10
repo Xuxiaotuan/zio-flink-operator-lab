@@ -68,6 +68,7 @@ function setMessage(element, text, state = "") { if (!element) return; element.t
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char])); }
 function stateBadge(state) { const value = String(state || "UNKNOWN").toUpperCase(); return `<span class="badge" data-state="${classifyState(value)}">${escapeHtml(value)}</span>`; }
 function namespace() { return byId("namespace").value.trim() || "default"; }
+function syncNamespace() { const value = namespace(); const target = byId("top-namespace"); if (target) target.textContent = value; }
 // randomUUID 仅在安全上下文提供；NodePort HTTP 用同样的密码学随机源生成 UUID v4。
 export function makeRequestId(cryptoSource = globalThis.crypto) {
   if (typeof cryptoSource?.randomUUID === "function") return `web-${cryptoSource.randomUUID()}`;
@@ -133,6 +134,7 @@ function init() {
   let latestDeployments = [];
   const app = { client, selectedJob, pollController, latestDeployments };
   byId("manifest").value = manifestTemplate();
+  syncNamespace();
 
   function showView(id) {
     if (!["overview", "jobs", "publish", "operations"].includes(id)) id = "overview";
@@ -178,6 +180,8 @@ function init() {
   }
   async function selectJob(name) {
     selectedJob = name; app.selectedJob = name;
+    const actionEmpty = document.querySelector(".action-empty");
+    if (actionEmpty) actionEmpty.hidden = true;
     byId("job-title").textContent = name;
     byId("job-actions").hidden = false;
     renderJobList(latestDeployments);
@@ -216,8 +220,13 @@ function init() {
     finally { button.disabled = false; delete button.dataset.state; }
   }
   document.querySelectorAll("nav a[data-view]").forEach(link => link.addEventListener("click", () => showView(link.dataset.view)));
-  byId("namespace-form").addEventListener("submit", event => { event.preventDefault(); refresh(); });
+  byId("namespace-form").addEventListener("submit", event => { event.preventDefault(); syncNamespace(); refresh(); });
   document.querySelectorAll("[data-action]").forEach(button => button.addEventListener("click", () => runAction(button.dataset.action)));
+  document.querySelectorAll("[data-tab-target]").forEach(button => button.addEventListener("click", () => {
+    const target = button.dataset.tabTarget;
+    document.querySelectorAll("[data-tab-target]").forEach(tab => tab.classList.toggle("active", tab === button));
+    document.querySelectorAll(".tab-panel").forEach(panel => { panel.hidden = panel.id !== target; });
+  }));
   byId("publish-form").addEventListener("submit", async event => { event.preventDefault(); const submit = byId("submit-publish"); submit.disabled = true; submit.dataset.state = "loading"; try { const body = await client.publish(namespace(), JSON.parse(byId("manifest").value), byId("publish-mode").value, ensureRequestId(byId("publish-request-id"))); startOperation(body); } catch (error) { setMessage(byId("publish-message"), error.message, "error"); } finally { submit.disabled = false; delete submit.dataset.state; } });
   byId("dry-run").addEventListener("click", async () => { try { const body = await client.publish(namespace(), JSON.parse(byId("manifest").value), byId("publish-mode").value, "", true); byId("dry-run-result").hidden = false; byId("dry-run-json").textContent = JSON.stringify(body, null, 2); setMessage(byId("publish-message"), "Kubernetes dry-run 完成，未创建 operation。", "success"); } catch (error) { setMessage(byId("publish-message"), error.message, "error"); } });
   byId("operation-form").addEventListener("submit", event => { event.preventDefault(); observe(byId("operation-id").value.trim()); });
@@ -236,6 +245,7 @@ function init() {
     try {
       const config = await client.config();
       if (config.namespace) byId("namespace").value = config.namespace;
+      syncNamespace();
     } catch (error) {
       setMessage(byId("overview-message"), `未读取服务默认 namespace，使用当前输入值：${error.message}`, "error");
     }
