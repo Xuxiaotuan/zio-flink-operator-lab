@@ -13,7 +13,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
 
-本轮基线结果：`sbt -batch test` 通过 118 个测试；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `d033d01d382e30ec0981e4ce35469cef8e7ffbfe`）；`node --test src/test/web/app.test.mjs` 通过 8 个测试，`node --check src/main/resources/web/app.js` 通过，`mvn -B -f job/pom.xml package -DskipTests` 成功。
+本轮基线结果：`sbt -batch test` 通过 115 个测试；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `52516048cdfa367fa9ae0a0760505fbdd38f06b9`）；`node --test src/test/web/app.test.mjs` 通过 8 个测试，`node --check src/main/resources/web/app.js` 通过，`mvn -B -f job/pom.xml package -DskipTests` 成功；前端 Nginx 镜像构建和 `nginx -t` 通过。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复、单副本故障演练、锁租约接管和 PostgreSQL 双节点运行已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。控制面压力与长稳测试的结果记录在本页最新现场验收中。
 
@@ -26,6 +26,12 @@ mvn -B -f job/pom.xml package -DskipTests
 - 修复后的 Operation `cc2b7a3f-0188-342f-8f05-62851aca2dac` 为 `COMPLETED`，事件包含 `SUBMITTED → WAITING_FOR_OBSERVATION → OBSERVED → VERIFICATION_SUCCEEDED`；generation/observedGeneration 都为 `3`，`lastReconciledSpec` 包含 `upgradeMode=savepoint`、源 Savepoint 和 `savepointRedeployNonce=1`。
 - Flink Job ID 从 `e1a10ea8e1efb2936b3f176fd60a6e80` 变为 `c4758c4cf3758a58df9384d511e1c205`。JobManager 日志记录 `Restoring job ... from Savepoint`，Flink REST 显示 `restored=1`、`completed=10`，最新 checkpoint 路径为 `s3://flink-savepoints/zio-e2e-20261010/checkpoints/c4758c4cf3758a58df9384d511e1c205/chk-15`；源 Savepoint 的 RustFS `_metadata` HEAD 返回 HTTP 200。
 - 验证完成后删除了本轮 `zio-e2e-*` 的 FlinkDeployment、FlinkStateSnapshot、FlinkOperation、JobManager、TaskManager 和 Service；复查没有临时资源残留。RustFS Savepoint 对象保留为审计和恢复证据。
+
+### 前后端拆分验收（2026-10-10）
+
+- PipelineRun `zio-flink-operator-lab-qmp6n`（Jenkins build `#39`）成功，目标镜像为 API `build-39-fb007b454494` 和前端 `zio-flink-operator-ui:build-39-fb007b454494`。
+- `zio-flink-operator` API Service 已为 ClusterIP，两个 API Pod 分别运行在 `xjw`、`xxt`；`zio-flink-operator-ui` 为单副本 Deployment，运行在 `xjw`，NodePort `30882` 对外提供页面和 Nginx 反向代理。
+- 两个节点的 `http://<node>:30882/` 均返回 `ZIO Flink Platform` 页面；`/healthz`、`/readyz` 和经代理的 `/v1/config` 均返回成功，namespace 为 `bigdata-lab`。
 
 现场故障演练：删除 xjw 节点上的一个控制面 Pod 后，xxt 节点副本持续返回 `{"status":"ok"}`，Deployment 自动补回 xjw 副本并恢复 `2/2`；Flink 作业和 Kubernetes CR 未受影响。
 - 覆盖 HTTP/domain、类型化控制面、FlinkDeployment/FlinkStateSnapshot JSON、fake Kubernetes API、HTTP wire contract、HTTP 控制面状态/快照接口、统一状态后端配置与接口、watch 状态投影、checkpoint/savepoint 字段、回退审计、锁租约续期与接管、重试策略。

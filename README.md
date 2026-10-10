@@ -40,6 +40,11 @@ curl -fsS http://127.0.0.1:8080/healthz
 
 浏览器工作台在 Kubernetes 中由单副本 `zio-flink-operator-ui` 提供，ZIO API 由多副本 `zio-flink-operator` 提供。前端通过 Nginx 反向代理访问 `/v1/*`；CLI 不属于当前运行入口。服务没有认证授权，必须只在本地或受限内网开放。
 
+目标集群前端地址：
+
+- [xjw:30882](http://100.82.226.63:30882/)
+- [xxt:30882](http://100.97.53.78:30882/)
+
 服务启动后，也可以通过 HTTP 提交部署并查询操作：
 
 ```sh
