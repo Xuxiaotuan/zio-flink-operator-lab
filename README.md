@@ -76,6 +76,8 @@ curl -fsS "http://127.0.0.1:8080/v1/snapshots/orders-savepoint?namespace=$FLINK_
 
 状态轮询间隔由 `ZIO_FLINK_STATE_POLL_INTERVAL_SECONDS` 控制，默认 15 秒。Kubernetes 模式以 CR 为事实源；PostgreSQL 模式会把轮询得到的状态和最多 100 条生命周期事件写入共享表。
 
+对已存在的 Deployment 触发 Savepoint 重部署时，`job.upgradeMode` 必须是 `savepoint`，同时提交 `job.initialSavepointPath` 和每次递增的正整数 `job.savepointRedeployNonce`。这个 nonce 是 Flink Operator 触发完整重部署的变更信号；只修改路径不会触发恢复。
+
 ## 性能评估
 
 当前服务适合低到中等频率的 Flink 控制作业。目标集群的控制面基线为：60 秒、16 并发、9507 次请求全部成功；`/healthz` P95 约 159 ms，`/v1/state` P95 约 512.2 ms。10 分钟双节点稳定性测试完成 468 次请求、0 错误、P95 约 66.4 ms，期间无 Pod 重启。

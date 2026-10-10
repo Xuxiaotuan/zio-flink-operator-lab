@@ -19,7 +19,7 @@ object FlinkOperationFactory:
       _ <- ensureKeys(metadata, Set("name", "namespace"), "deployment.metadata")
       _ <- ensureKeys(spec, Set("image", "imagePullPolicy", "flinkVersion", "jobManager", "taskManager", "job", "serviceAccount", "flinkConfiguration", "podTemplate"), "deployment.spec")
       job = spec.get("job").flatMap(_.objOpt).getOrElse(Map.empty[String, ujson.Value])
-      _ <- ensureKeys(job, Set("jarURI", "entryClass", "parallelism", "upgradeMode", "state", "args", "initialSavepointPath", "allowNonRestoredState"), "deployment.spec.job")
+      _ <- ensureKeys(job, Set("jarURI", "entryClass", "parallelism", "upgradeMode", "state", "args", "initialSavepointPath", "allowNonRestoredState", "savepointRedeployNonce"), "deployment.spec.job")
       resolvedNamespace <- Namespace.from(namespace)
       resolvedName <- DeploymentName.from(name)
       image = string(spec, "image").getOrElse("flink:1.20.1")
@@ -32,13 +32,19 @@ object FlinkOperationFactory:
       args <- stringArray(job, "args")
       initialSavepointPath <- string(job, "initialSavepointPath").map(SnapshotPath.from).map(_.map(Some(_))).getOrElse(Right(None))
       allowNonRestoredState = valueBoolean(job, "allowNonRestoredState")
+      savepointRedeployNonce <- job.get("savepointRedeployNonce") match
+        case None => Right(None)
+        case Some(value) =>
+          // JSON 数值只接受精确整数，不能把小数截断成另一次恢复的 nonce。
+          value.numOpt.filter(n => n > 0 && n <= 9007199254740991d && n == math.floor(n))
+            .map(n => Some(n.toLong)).toRight("savepointRedeployNonce must be a positive safe JSON integer")
       jobManagerResources <- processResources(spec, "jobManager")
       taskManagerResources <- processResources(spec, "taskManager")
       imagePullPolicy <- string(spec, "imagePullPolicy").map(_.toLowerCase).filter(_ != "ifnotpresent").map(value => Left(s"unsupported imagePullPolicy: $value")).getOrElse(Right(()))
       serviceAccount = string(spec, "serviceAccount")
       flinkConfiguration <- configuration(spec)
       podTemplate <- spec.get("podTemplate").map(value => value.objOpt.map(entries => ujson.Obj.from(entries)).toRight("deployment.spec.podTemplate must be an object").map(Some(_))).getOrElse(Right(None))
-    yield FlinkOperation.Deploy(FlinkDeploymentSpec(resolvedNamespace, resolvedName, image, flinkVersion, FlinkJob(jar, entryClass, parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState), serviceAccount, flinkConfiguration.get("state.savepoints.dir"), flinkConfiguration, jobManagerResources, taskManagerResources, podTemplate))
+    yield FlinkOperation.Deploy(FlinkDeploymentSpec(resolvedNamespace, resolvedName, image, flinkVersion, FlinkJob(jar, entryClass, parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState, savepointRedeployNonce), serviceAccount, flinkConfiguration.get("state.savepoints.dir"), flinkConfiguration, jobManagerResources, taskManagerResources, podTemplate))
 
   /** 解析快照请求；快照同样先变成 FlinkOperation 再进入 worker。 */
   def fromSnapshotJson(namespace: String, raw: String): Either[String, FlinkOperation] =

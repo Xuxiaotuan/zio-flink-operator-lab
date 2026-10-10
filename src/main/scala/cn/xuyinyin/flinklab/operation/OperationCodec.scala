@@ -76,6 +76,7 @@ object OperationCodec:
       args <- job.get("args").map(_.arrOpt.toRight("job args must be an array").flatMap(_.toList.foldLeft[Either[String, List[String]]](Right(Nil)) { (acc, item) => for current <- acc; value <- item.strOpt.toRight("job args must contain strings") yield current :+ value })).getOrElse(Right(Nil))
       initialSavepointPath <- string(job, "initialSavepointPath").map(SnapshotPath.from).map(_.map(Some(_))).getOrElse(Right(None))
       allowNonRestoredState = string(job, "allowNonRestoredState").flatMap(_.toBooleanOption)
+      savepointRedeployNonce = numberLong(job, "savepointRedeployNonce")
       configuration: Map[String, String] = spec.get("flinkConfiguration").flatMap(_.objOpt).map(_.toSeq.flatMap { case (key, item) => item.strOpt.orElse(item.numOpt.map(_.toString)).orElse(item.boolOpt.map(_.toString)).map(value => key -> value) }.toMap).getOrElse(Map.empty)
       jobManagerResources = processResources(spec, "jobManager")
       taskManagerResources = processResources(spec, "taskManager")
@@ -85,7 +86,7 @@ object OperationCodec:
       name,
       string(spec, "image").getOrElse("flink:1.20.1"),
       string(spec, "flinkVersion").getOrElse("v1_20"),
-      FlinkJob(jar, string(job, "entryClass").getOrElse("org.apache.flink.streaming.examples.wordcount.WordCount"), parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState),
+      FlinkJob(jar, string(job, "entryClass").getOrElse("org.apache.flink.streaming.examples.wordcount.WordCount"), parallelism, protection, desiredState, args, initialSavepointPath, allowNonRestoredState, savepointRedeployNonce),
       string(spec, "serviceAccount"),
       configuration.get("state.savepoints.dir"),
       configuration,
@@ -172,3 +173,4 @@ object OperationCodec:
   private def parseInstant(value: String): Either[String, Instant] = scala.util.Try(Instant.parse(value)).toEither.left.map(_.getMessage)
   private def string(value: collection.Map[String, ujson.Value], key: String): Option[String] = value.get(key).flatMap(item => item.strOpt.orElse(item.numOpt.map(_.toString))).filter(_.nonEmpty)
   private def number(value: collection.Map[String, ujson.Value], key: String): Option[Int] = value.get(key).flatMap(item => item.numOpt.map(_.toInt).orElse(item.strOpt.flatMap(_.toIntOption))).filter(_ > 0)
+  private def numberLong(value: collection.Map[String, ujson.Value], key: String): Option[Long] = value.get(key).flatMap(item => item.numOpt.map(_.toLong).orElse(item.strOpt.flatMap(_.toLongOption))).filter(_ > 0)

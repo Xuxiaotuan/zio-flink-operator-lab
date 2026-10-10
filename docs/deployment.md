@@ -80,6 +80,20 @@ s3://flink-savepoints/zio-flink-operator/local/orbstack/flink-lineage-test/
 
 控制面只把 `state.savepoints.dir` 写入 FlinkDeployment；Flink 运行时 Pod 负责实际写入对象。Flink Pod 还需要可达的 S3 endpoint、文件系统插件和 Kubernetes Secret 中的凭据。凭据不能写入 Git、镜像、CR JSON 或日志。
 
+对已存在的 Deployment 触发 savepoint 重部署时，提交的 `FlinkDeployment.spec.job` 必须同时包含 `upgradeMode: "savepoint"`、`initialSavepointPath` 和递增的正整数 `savepointRedeployNonce`。只修改 `initialSavepointPath` 不会触发 Flink Operator 的完整 savepoint 重部署；nonce 每次新的恢复操作都必须变化（同一 requestId 重试保持不变），并且由控制面保留在 Operation 审计 JSON 中。
+
+示例：
+
+```json
+{
+  "job": {
+    "upgradeMode": "savepoint",
+    "initialSavepointPath": "s3://flink-savepoints/example/savepoints/savepoint-abc",
+    "savepointRedeployNonce": 1
+  }
+}
+```
+
 `deploy/local/rustfs-secret.example.yaml` 只有字段模板和占位符，不能直接作为真实 Secret 使用。checkpoint 与 savepoint 使用不同的存储生命周期，不能把两者混成一个验收结果。
 
 ## HTTP 控制面和浏览器工作台

@@ -26,6 +26,26 @@ object ControlPlaneDomainSpec extends ZIOSpecDefault:
         val operation = Operation.accepted(RequestId.from("req-last-state").toOption.get, FlinkOperation.Upgrade(resource, spec, UpgradePolicy(StateProtection.LastState, FallbackPolicy.AllowLastState)), resource, Instant.parse("2026-10-03T00:00:00Z"))
         assertTrue(OperationCodec.fromJson(OperationCodec.json(operation)).isRight)
       },
+      test("round trips the savepoint redeploy nonce in an operation CR") {
+        val job = FlinkJob(
+          JobJarUri.unsafe("local:///job.jar"),
+          "example.WordCount",
+          1,
+          StateProtection.Savepoint,
+          initialSavepointPath = Some(SnapshotPath.from("s3://bucket/savepoint-1").toOption.get),
+          savepointRedeployNonce = Some(2L)
+        )
+        val deployment = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", job)
+        val operation = Operation.accepted(RequestId.from("req-savepoint-redeploy").toOption.get, FlinkOperation.Deploy(deployment), resource, Instant.parse("2026-10-03T00:00:00Z"))
+        val restored = OperationCodec.fromJson(OperationCodec.json(operation))
+        assertTrue(
+          restored.toOption.exists {
+            case Operation(_, _, FlinkOperation.Deploy(spec), _, _, _, _, _) =>
+              spec.job.initialSavepointPath.exists(_.snapshotPathValue == "s3://bucket/savepoint-1") && spec.job.savepointRedeployNonce.contains(2L)
+            case _ => false
+          }
+        )
+      },
       test("rejects an invalid stateless fallback policy") {
         assertTrue(UpgradePolicy(StateProtection.Stateless, FallbackPolicy.AllowLastState).validate.isLeft)
       },

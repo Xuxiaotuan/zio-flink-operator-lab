@@ -12,7 +12,8 @@ final case class FlinkJob(
     desiredState: DesiredJobState = DesiredJobState.Running,
     args: List[String] = Nil,
     initialSavepointPath: Option[SnapshotPath] = None,
-    allowNonRestoredState: Option[Boolean] = None
+    allowNonRestoredState: Option[Boolean] = None,
+    savepointRedeployNonce: Option[Long] = None
 ):
   /** 生成 FlinkDeployment.spec，字段名保持 Operator CRD 契约。 */
   def json: Obj =
@@ -26,6 +27,7 @@ final case class FlinkJob(
     if args.nonEmpty then value("args") = Arr(args.map(Str.apply)*)
     initialSavepointPath.foreach(path => value("initialSavepointPath") = path.snapshotPathValue)
     allowNonRestoredState.foreach(flag => value("allowNonRestoredState") = Bool(flag))
+    savepointRedeployNonce.foreach(nonce => value("savepointRedeployNonce") = nonce)
     value
 
 final case class FlinkProcessResources(cpu: Double = 1, memory: String = "1024m"):
