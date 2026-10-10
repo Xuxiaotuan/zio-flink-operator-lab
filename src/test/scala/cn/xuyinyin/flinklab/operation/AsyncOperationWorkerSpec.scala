@@ -98,6 +98,28 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         applied <- records.get
       yield assertTrue(completed.state == OperationState.Completed, applied.exists(_.contains("FlinkStateSnapshot")), applied.exists(_.contains("orders-savepoint")))
     },
+    test("preserves an operator rejection instead of masking it as a generation mismatch") {
+      for
+        api <- ZIO.succeed(new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"generation":1,"resourceVersion":"2"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        )
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            ZStream.succeed(ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("3"), Some("uid"), Some(1), None, """{"kind":"FlinkDeployment","metadata":{"name":"orders","generation":1},"status":{"error":"spec.serviceAccount must be defined","reconciliationStatus":{"state":"UPGRADING"}}}"""))
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-operator-rejection").toOption.get, operation)
+        _ <- worker.process(accepted.operationId).either
+        stored <- store.get(accepted.operationId)
+      yield assertTrue(stored.exists(_.state == OperationState.Failed), stored.exists(_.events.exists {
+        case OperationEvent.Failed(_, reason) => reason.contains("serviceAccount")
+        case _ => false
+      }))
+    },
     test("terminalizes an abandoned snapshot instead of waiting for a timeout") {
       for
         api <- ZIO.succeed(new KubernetesApi:

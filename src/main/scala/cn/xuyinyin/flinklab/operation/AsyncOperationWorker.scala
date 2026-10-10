@@ -163,7 +163,7 @@ final class DefaultAsyncOperationWorker(
         verifier.verify(operation, target, evidence, expectedGeneration) match
           case Right(result) => Some(Right(result.evidence))
           // Job FAILED、Operator ERROR 等不可恢复状态立即结束等待。
-          case Left(error) if deterministicFailure(evidence) => Some(Left(error))
+          case Left(error) if deterministicFailure(evidence) => Some(Left(deterministicError(evidence, error)))
           case Left(_) => None
       }
       .collectSome
@@ -209,6 +209,15 @@ final class DefaultAsyncOperationWorker(
       case (StateProtection.LastState, ActualProtection.LastState) => true
       case (StateProtection.Savepoint, ActualProtection.Savepoint(_)) => true
       case _ => false
+
+  /** Operator 已明确拒绝时优先保留 CR 的 error 字段，避免被 generation 校验遮蔽。 */
+  private def deterministicError(evidence: Evidence, fallback: ControlPlaneError): ControlPlaneError =
+    val message = scala.util.Try(ujson.read(evidence.raw)).toOption
+      .flatMap(_.obj.get("status").flatMap(_.objOpt))
+      .flatMap(_.get("error").flatMap(_.strOpt))
+      .filter(_.trim.nonEmpty)
+      .getOrElse(fallback.message)
+    ControlPlaneError.VerificationFailed(message)
 
   private def terminalize(id: OperationId, error: ControlPlaneError): IO[ControlPlaneError, Unit] =
     val event = error match
