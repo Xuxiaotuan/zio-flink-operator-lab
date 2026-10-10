@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 const source = await readFile(new URL('../../main/resources/web/app.js', import.meta.url), 'utf8');
-const { createClient, observeOperation, classifyState } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { createClient, observeOperation, classifyState, makeRequestId, ensureRequestId, manifestTemplate, errorMessage } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 const reply = (status, body) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) });
 test('job action encodes namespace/name, preserves requestId and requests strict savepoint restart', async () => {
@@ -54,7 +54,7 @@ test('cancelled observation does not deliver a late response', async () => {
 test('dry-run has no idempotency key and upgrade never rewrites manifest protection', async () => {
   const calls = [];
   const client = createClient(async (url, options) => { calls.push([new URL(url, 'http://local'), JSON.parse(options.body)]); return reply(200, {}); });
-  const manifest = { metadata: { name: 'orders' }, spec: { job: { upgradeMode: 'savepoint' } } };
+  const manifest = { metadata: { name: 'orders' }, spec: { job: { upgradeMode: 'savepoint' }, flinkConfiguration: { 'state.checkpoints.dir': 's3://bucket/cp', 'state.savepoints.dir': 's3://bucket/sp' } } };
   await client.publish('analytics', manifest, 'deploy', 'retry-1', true);
   assert.equal(calls[0][0].pathname, '/v1/deployments');
   assert.equal(calls[0][0].searchParams.get('dryRun'), 'true');
@@ -71,4 +71,62 @@ test('dry-run rejects upgrade before network because the server contract only pr
     /dry-run.*(Deployment|创建)/i
   );
   assert.equal(called, false);
+});
+
+// NodePort 使用 HTTP，必须覆盖 randomUUID 缺失的浏览器环境。
+test('request IDs work without randomUUID and retain UUID v4 bits', () => {
+  let seed = 0;
+  const crypto = { getRandomValues: bytes => { bytes.fill(++seed); return bytes; } };
+  const first = makeRequestId(crypto);
+  assert.match(first, /^web-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  assert.notEqual(makeRequestId(crypto), first);
+  assert.equal(makeRequestId({ randomUUID: () => 'secure-uuid' }), 'web-secure-uuid');
+  assert.throws(() => makeRequestId({}), /手动填写/);
+});
+test('generated request ID stays visible and is reused after network failure', async () => {
+  const input = { value: '' };
+  let generated = 0;
+  const generate = () => `test-${++generated}`;
+  const keys = [];
+  const client = createClient(async url => { keys.push(new URL(url, 'http://local').searchParams.get('requestId')); throw new Error('disconnected'); });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(client.publish('lab', JSON.parse(manifestTemplate()), 'deploy', ensureRequestId(input, generate)), /disconnected/);
+  }
+  assert.equal(input.value, 'test-1');
+  assert.deepEqual(keys, ['test-1', 'test-1']);
+  input.value = '  explicit-id  ';
+  assert.equal(ensureRequestId(input, generate), 'explicit-id');
+  assert.equal(generated, 1);
+});
+test('starter is explicitly stateless with a Flink service account', () => {
+  const spec = JSON.parse(manifestTemplate()).spec;
+  assert.equal(spec.job.upgradeMode, 'stateless');
+  assert.equal(spec.serviceAccount, 'flink');
+  assert.equal(spec.job.entryClass, 'org.apache.flink.streaming.examples.wordcount.WordCount');
+});
+test('stateful manifest missing directories is rejected before submission without changing policy', () => {
+  let called = false;
+  const client = createClient(async () => { called = true; return reply(202, {}); });
+  const manifest = JSON.parse(manifestTemplate());
+  manifest.spec.job.upgradeMode = 'savepoint';
+  assert.throws(() => client.publish('lab', manifest, 'deploy', 'key'), /checkpoint/);
+  manifest.spec.flinkConfiguration = { 'state.checkpoints.dir': 's3://bucket/checkpoints' };
+  assert.throws(() => client.publish('lab', manifest, 'deploy', 'key'), /savepoint/);
+  assert.equal(called, false);
+  assert.equal(manifest.spec.job.upgradeMode, 'savepoint');
+});
+test('stateful directory aliases are accepted and policy is preserved', async () => {
+  const client = createClient(async (_url, options) => reply(202, JSON.parse(options.body)));
+  for (const prefix of ['state', 'execution.checkpointing']) {
+    const manifest = JSON.parse(manifestTemplate());
+    manifest.spec.job.upgradeMode = 'savepoint';
+    manifest.spec.flinkConfiguration = prefix === 'state'
+      ? { 'state.checkpoints.dir': 's3://bucket/cp', 'state.savepoints.dir': 's3://bucket/sp' }
+      : { 'execution.checkpointing.dir': 's3://bucket/cp', 'execution.checkpointing.savepoint-dir': 's3://bucket/sp' };
+    assert.equal((await client.publish('lab', manifest, 'upgrade', 'key')).spec.job.upgradeMode, 'savepoint');
+  }
+});
+test('operator JSON errors expose their message and retain plain text errors', () => {
+  assert.equal(errorMessage('{"type":"ValidationException","message":"checkpoint missing"}'), 'checkpoint missing');
+  assert.equal(errorMessage('plain failure'), 'plain failure');
 });
