@@ -2,20 +2,26 @@
 
 ## 运行形态
 
-HTTP 控制面不保存本地会话状态。多个副本通过 Kubernetes CR 或 PostgreSQL 状态后端读取统一观测，不使用 RustFS 做锁。
+HTTP 控制面不保存本地会话状态。多个 ZIO API 副本通过 Kubernetes CR 或 PostgreSQL 状态后端读取统一观测，不使用 RustFS 做锁；浏览器前端是独立的单副本静态服务。
 
 ```text
-Client -> Service -> zio-flink-operator replicas -> Kubernetes API Server
-                                                    |
-                                                    v
-                                      Flink Kubernetes Operator
+Browser -> zio-flink-operator-ui (1 replica, Nginx)
+                                  |
+                                  v
+                     zio-flink-operator Service (ClusterIP)
+                                  |
+                                  v
+                  zio-flink-operator replicas (2) -> Kubernetes API Server
+                                                        |
+                                                        v
+                                          Flink Kubernetes Operator
 ```
 
-HTTP 副本处理请求；每个写操作由异步 worker 通过 ResourceObserver 观察目标 CR。Kubernetes 部署默认把操作审计写入 `FlinkOperation` CR，副本通过同一个 API Server 共享状态；裸机或外部审计场景才显式选择 PostgreSQL。HTTP 查询接口用于显式观察资源。
+前端只提供静态页面和同源反向代理，不保存业务状态；ZIO API 副本处理请求，每个写操作由异步 worker 通过 ResourceObserver 观察目标 CR。Kubernetes 部署默认把操作审计写入 `FlinkOperation` CR，副本通过同一个 API Server 共享状态；裸机或外部审计场景才显式选择 PostgreSQL。HTTP 查询接口用于显式观察资源。
 
 ## 本地 Kubernetes
 
-本地清单位于 `deploy/local`，包含 namespace、ServiceAccount、RBAC、Service 和两个 HTTP 副本。
+本地清单位于 `deploy/local`，包含 namespace、ServiceAccount、RBAC、API Service、两个 API 副本和一个前端副本。
 
 ```sh
 sbt -batch test
@@ -26,7 +32,7 @@ kubectl -n flink-lineage-test rollout status deployment/zio-flink-operator --tim
 kubectl -n flink-lineage-test get pods -l app.kubernetes.io/name=zio-flink-operator -o wide
 ```
 
-本地 OrbStack 使用本机镜像和 `imagePullPolicy: IfNotPresent`。当前本地环境是单节点；两个副本证明进程复制和 Service 路由，不证明跨节点高可用。两个副本使用 `maxSurge: 0`、`maxUnavailable: 1` 滚动更新，先释放旧 Pod 再创建新 Pod，适配两节点反亲和约束。`deploy/local` 设置 `ZIO_FLINK_STATE_BACKEND=kubernetes`。
+本地 OrbStack 使用本机镜像和 `imagePullPolicy: IfNotPresent`。当前本地环境是单节点；API 两个副本和前端一个副本只能证明进程复制和 Service 路由，不证明跨节点高可用。API 两个副本使用 `maxSurge: 0`、`maxUnavailable: 1` 滚动更新，前端保持一个副本。`deploy/local` 设置 `ZIO_FLINK_STATE_BACKEND=kubernetes`。
 
 在两台或更多节点的集群中，Deployment 的副本使用 hostname 反亲和偏好分散调度；Service 不使用会话亲和性，任一副本都能从 API Server 读取相同 CR 状态。
 
@@ -42,7 +48,7 @@ curl -fsS http://127.0.0.1:18080/readyz
 
 ## 两节点目标 Kubernetes
 
-目标集群的服务清单位于 `deploy/bigdata-lab`，只部署一个 `zio-flink-operator` Service 和一个两副本 Deployment。副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和偏好，滚动更新设置 `maxSurge: 0`、`maxUnavailable: 1`，先释放一个旧副本再调度新副本；Service 使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
+目标集群的服务清单位于 `deploy/bigdata-lab`，部署一个两副本 ZIO API Deployment、一个 ClusterIP API Service，以及一个单副本前端 Deployment 和 NodePort Service。API 副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和偏好，前端只保留一个副本；前端使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
 
 ```text
 s3://flink-savepoints/zio-flink-operator/bigdata-lab/
@@ -53,12 +59,14 @@ s3://flink-savepoints/zio-flink-operator/bigdata-lab/
 ```sh
 kubectl apply -k deploy/bigdata-lab
 kubectl -n bigdata-lab rollout status deployment/zio-flink-operator --timeout=180s
+kubectl -n bigdata-lab rollout status deployment/zio-flink-operator-ui --timeout=180s
 kubectl -n bigdata-lab get pods -l app.kubernetes.io/name=zio-flink-operator -o wide
+kubectl -n bigdata-lab get pods -l app.kubernetes.io/name=zio-flink-operator-ui -o wide
 curl -fsS http://<任一节点>:30882/healthz
-curl -fsS 'http://<任一节点>:30882/v1/state?namespace=bigdata-lab'
+open http://<任一节点>:30882/
 ```
 
-两个副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态和 operation 生命周期默认都来自 Kubernetes CR；每个副本都会轮询，因此状态轮询流量随副本数线性增加。`FlinkOperationLock` CR 按目标资源提供跨副本互斥。设置 `ZIO_FLINK_OPERATION_STORE=postgres` 后，只有 operation 审计切换到 PostgreSQL，Flink 资源状态仍来自 Kubernetes。
+两个 API 副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态和 operation 生命周期默认都来自 Kubernetes CR；每个副本都会轮询，因此状态轮询流量随 API 副本数线性增加。`FlinkOperationLock` CR 按目标资源提供跨副本互斥。设置 `ZIO_FLINK_OPERATION_STORE=postgres` 后，只有 operation 审计切换到 PostgreSQL，Flink 资源状态仍来自 Kubernetes。前端只通过 API Service 访问后端，不参与状态协调。
 
 Flink 冷启动和 TaskManager 调度可能超过短轮询窗口，worker 的提交、删除和验证超时由 `ZIO_FLINK_VERIFICATION_TIMEOUT_SECONDS` 控制，默认 180 秒；现场集群可以按镜像拉取和调度时延调整。
 
@@ -104,13 +112,13 @@ s3://flink-savepoints/zio-flink-operator/local/orbstack/flink-lineage-test/
 sbt run
 ```
 
-容器入口直接启动 HTTP 服务。服务默认监听 `0.0.0.0:8080`。浏览器工作台和 API 共用这个端口：
+容器入口直接启动 ZIO API 服务。服务默认监听 `0.0.0.0:8080`，只提供健康检查和 `/v1/*` API。浏览器工作台由独立的单副本前端容器提供：
 
 ```text
-http://127.0.0.1:8080/
+http://<任一节点>:30882/
 ```
 
-前端静态资源由 assembly 打进同一个 JAR，不部署第二个前端服务。工作台先从只读 `/v1/config` 读取服务默认 namespace，再通过 `/v1/deployments`、`/v1/snapshots`、`/v1/state` 和 `/v1/operations/{id}` 读取状态，通过 HTTP POST 触发操作，并用有界轮询观察 Operation；初始 `202 ACCEPTED` 不会被显示为完成。
+前端静态资源由 `frontend/Dockerfile` 构建为 Nginx 镜像。工作台先从只读 `/v1/config` 读取服务默认 namespace，再通过反向代理访问 `/v1/deployments`、`/v1/snapshots`、`/v1/state` 和 `/v1/operations/{id}`，通过 HTTP POST 触发操作，并用有界轮询观察 Operation；初始 `202 ACCEPTED` 不会被显示为完成。
 
 当前版本没有认证和授权。生产或共享集群必须使用私有 Service/Ingress、NetworkPolicy 或其他网络边界，只允许受信任的运维网络访问。相关字段见 [状态监控](monitoring.md)。
 

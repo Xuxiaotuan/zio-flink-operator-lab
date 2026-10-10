@@ -38,7 +38,7 @@ sbt run
 curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-浏览器工作台位于 [http://127.0.0.1:8080/](http://127.0.0.1:8080/)。它与 API 使用同一个 HTTP 服务，启动时从只读 `/v1/config` 读取服务默认 namespace，提供作业状态、发布、Savepoint 操作和 Operation 轮询；CLI 不属于当前运行入口。服务没有认证授权，必须只在本地或受限内网开放。
+浏览器工作台在 Kubernetes 中由单副本 `zio-flink-operator-ui` 提供，ZIO API 由多副本 `zio-flink-operator` 提供。前端通过 Nginx 反向代理访问 `/v1/*`；CLI 不属于当前运行入口。服务没有认证授权，必须只在本地或受限内网开放。
 
 服务启动后，也可以通过 HTTP 提交部署并查询操作：
 
@@ -97,7 +97,7 @@ export POSTGRES_PASSWORD='由 Secret 注入'
 sbt run
 ```
 
-Kubernetes 部署默认使用 API Server 中的 Flink CR 作为多副本共享状态，不需要额外缓存。savepoint 和 checkpoint 文件仍由 Flink 运行时写入 RustFS。
+Kubernetes 部署默认使用 API Server 中的 Flink CR 作为多副本共享状态，不需要额外缓存。savepoint 和 checkpoint 文件仍由 Flink 运行时写入 RustFS。前端是单副本静态服务，后端 ZIO 控制面保持两副本。
 
 ## 版本与边界
 

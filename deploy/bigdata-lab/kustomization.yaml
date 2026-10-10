@@ -5,3 +5,5 @@ resources:
   - rbac.yaml
   - service.yaml
   - deployment.yaml
+  - frontend-service.yaml
+  - frontend-deployment.yaml

@@ -9,9 +9,9 @@ metadata:
 spec:
   selector:
     app.kubernetes.io/name: zio-flink-operator
+    app.kubernetes.io/component: api
   ports:
     - name: http
       port: 8080
       targetPort: http
-      nodePort: 30882
-  type: NodePort
+  type: ClusterIP

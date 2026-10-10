@@ -41,7 +41,7 @@ mvn -B -f job/pom.xml package -DskipTests
 本轮目标集群验证记录：
 
 - K8s `v1.23.17`，两节点 `xjw`、`xxt`；Flink Kubernetes Operator `1.16.1` 已 Ready，并只 watch `bigdata-lab`。
-- `zio-flink-operator` 两个 Pod 分别调度到 `xjw`、`xxt`，NodePort 为 `30882`；从两台节点访问 `/healthz` 均返回 `{"status":"ok"}`。
+- `zio-flink-operator` 两个 API Pod 分别调度到 `xjw`、`xxt`；前端 `zio-flink-operator-ui` 单副本通过 NodePort `30882` 对外提供页面和反向代理，从两台节点访问 `/healthz` 均返回 `{"status":"ok"}`。
 - 从两台节点访问 `/v1/state?namespace=bigdata-lab` 都读到同一个 `zio-word-count` CR，backend 为 `kubernetes`，生命周期为 `STABLE`。
 - 通过 HTTP 提交 `FlinkDeployment` 后，Operator 让 JobManager、TaskManager 进入 Ready，Job 进入 `FINISHED`，并产生 jobId `475c0a0e218426706464212870d4e5cf`。
 
@@ -104,7 +104,7 @@ kubectl apply -k deploy/local
 kubectl -n flink-lineage-test rollout status deployment/zio-flink-operator --timeout=120s
 ```
 
-本地 Deployment 为两个副本，OrbStack 当前只有一个节点。健康检查和 deployment dry-run 可以验证服务进程、Service、RBAC 和 API Server 访问；不能证明跨节点高可用或真实 Flink Job。
+本地 API Deployment 为两个副本、前端 Deployment 为一个副本，OrbStack 当前只有一个节点。健康检查和 deployment dry-run 可以验证服务进程、Service、RBAC 和 API Server 访问；不能证明跨节点高可用或真实 Flink Job。
 
 ## 真实集群验收
 

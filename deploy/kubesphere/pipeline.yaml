@@ -34,6 +34,7 @@ spec:
         environment {
           REGISTRY = '100.97.53.78:5001'
           IMAGE_REPOSITORY = 'xxt/zio-flink-operator-lab'
+          FRONTEND_IMAGE_REPOSITORY = 'xxt/zio-flink-operator-ui'
           SOURCE_REPOSITORY = 'https://github.com/Xuxiaotuan/zio-flink-operator-lab.git'
           SOURCE_BRANCH = 'main'
           TARGET_NAMESPACE = 'bigdata-lab'
@@ -105,6 +106,11 @@ spec:
                     docker push "$image:$tag"
                     docker push "$image:latest"
                     printf '%s\n' "$image:$tag" > .image
+                    frontend_image="$REGISTRY/$FRONTEND_IMAGE_REPOSITORY"
+                    docker build -f frontend/Dockerfile -t "$frontend_image:$tag" -t "$frontend_image:latest" .
+                    docker push "$frontend_image:$tag"
+                    docker push "$frontend_image:latest"
+                    printf '%s\n' "$frontend_image:$tag" > .frontend-image
                     flink_image="$REGISTRY/xxt/zio-flink-stateful-job"
                     docker build -f job/Dockerfile -t "$flink_image:$tag" -t "$flink_image:latest" .
                     docker push "$flink_image:$tag"
@@ -127,9 +133,13 @@ spec:
                   set +x
                   token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
                   server="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}"
+                  # 先释放旧 API NodePort，再创建前端 NodePort；否则同一轮迁移会发生端口冲突。
+                  kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt -n "$TARGET_NAMESPACE" apply -f deploy/bigdata-lab/service.yaml
                   kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt apply -k deploy/bigdata-lab
                   kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt -n "$TARGET_NAMESPACE" set image deployment/zio-flink-operator api="$(cat .image)"
+                  kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt -n "$TARGET_NAMESPACE" set image deployment/zio-flink-operator-ui frontend="$(cat .frontend-image)"
                   kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt -n "$TARGET_NAMESPACE" rollout status deployment/zio-flink-operator --timeout=180s
+                  kubectl --server="$server" --token="$token" --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt -n "$TARGET_NAMESPACE" rollout status deployment/zio-flink-operator-ui --timeout=180s
                 '''
               }
             }

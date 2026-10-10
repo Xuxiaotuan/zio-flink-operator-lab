@@ -37,7 +37,12 @@ curl -fsS http://127.0.0.1:8080/healthz
 
 默认监听 `0.0.0.0:8080`。服务启动后，所有提交、查询、观察和快照请求都通过 HTTP API 完成。
 
-打开 [http://127.0.0.1:8080/](http://127.0.0.1:8080/) 可以使用浏览器工作台：
+在 Kubernetes 部署中，打开前端 Service 的地址可以使用浏览器工作台；ZIO API 自身只提供 HTTP API：
+
+```sh
+kubectl -n flink-lineage-test port-forward svc/zio-flink-operator-ui 18082:8080
+open http://127.0.0.1:18082/
+```
 
 - **总览**：读取当前 namespace 的 FlinkDeployment 和 FlinkStateSnapshot；
 - **作业**：查看 Job、checkpoint、savepoint 和 Operator 条件；

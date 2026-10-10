@@ -73,7 +73,7 @@ ZIO HTTP Platform
 Flink Kubernetes Operator → Flink Job
 ```
 
-前端静态文件和 HTTP API 由同一个 ZIO 服务提供，生产部署不拆分前端服务和后端服务。
+前端静态文件由独立的单副本 Nginx 服务提供，HTTP API 由多副本 ZIO 服务提供；前端通过同源反向代理访问 API。
 
 ## 领域模型
 

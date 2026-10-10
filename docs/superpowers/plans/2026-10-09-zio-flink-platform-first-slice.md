@@ -150,7 +150,7 @@ Run: `sbt -batch test assembly`
 Run: `node --check src/main/resources/web/app.js`
 Expected: all Scala tests and assembly pass; JavaScript syntax check passes when Node is available.
 
-Implementation note: documentation was reviewed manually against the browser URL, HTTP-only startup, polling semantics, and no-auth boundary. A separate runtime/container change was unnecessary because sbt assembly already packages `src/main/resources/web` into the existing single-service JAR.
+Implementation note: the first slice originally embedded the browser assets in the API JAR. The deployment now builds those same assets into a standalone single-replica frontend image and reverse-proxies requests to the multi-replica ZIO API.
 
 ## Deferred follow-up plans
 

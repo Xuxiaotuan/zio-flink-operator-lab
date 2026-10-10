@@ -118,4 +118,4 @@ Kubernetes 模式不会额外引入 ConfigMap 缓存，避免 CR 与缓存出现
 
 当前已完成目标集群 PipelineRun #28、Flink Operator reconcile、两副本调度、Kubernetes CR 统一 operation 状态、RustFS checkpoint/savepoint、savepoint 恢复连续性、单副本故障演练、过期锁接管和 PostgreSQL 双节点运行的现场验收。HTTP dry-run、策略与最终 Flink 请求一致性、稳定 requestId、活动资源互斥、Operation CR resourceVersion 条件更新、worker 重启后的阶段恢复、快照 UID/结果路径校验、删除 UID 前置条件、watch 正常 EOF 重连、验证 Evidence、锁租约续期和 `FallbackDetected` 已有代码和回归测试；本轮还完成了控制面压力与长稳基线。单元测试、构建和 kustomize 渲染不能替代真实集群证据，控制面读请求指标也不能外推为 Flink 作业吞吐容量。
 
-本地 OrbStack 只有一个节点，两个 Pod 只能证明进程副本和 Service 路由。目标集群清单使用一个 NodePort Service、两个副本、hostname 反亲和和 `DoNotSchedule`；两台机器的跨节点调度需要目标集群可达、节点标签正常、Operator 已安装，并通过滚动重启和状态接口验证。每个副本都轮询同一 Kubernetes API，状态统一来自 CR；这会按副本数增加 list 请求量，后续高规模场景应增加 leader election 或集中式 watch。
+本地 OrbStack 只有一个节点，API 两个 Pod 和前端一个 Pod 只能证明进程副本与 Service 路由。目标集群清单使用前端 NodePort、API ClusterIP、API 两个副本和前端一个副本；两台机器的跨节点调度需要目标集群可达、节点标签正常、Operator 已安装，并通过滚动重启和状态接口验证。每个 API 副本都轮询同一 Kubernetes API，状态统一来自 CR；这会按 API 副本数增加 list 请求量，后续高规模场景应增加 leader election 或集中式 watch。
