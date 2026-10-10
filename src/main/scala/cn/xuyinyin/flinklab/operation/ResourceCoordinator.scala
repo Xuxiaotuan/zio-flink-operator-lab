@@ -32,7 +32,7 @@ final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCo
     }
 
   private final case class LockLease(uid: Option[ResourceUid], resourceVersion: Option[String])
-  private final case class ExistingLock(uid: Option[ResourceUid], expiresAt: Instant)
+  private final case class ExistingLock(uid: Option[ResourceUid], resourceVersion: Option[String], expiresAt: Instant)
 
   // 创建冲突时只接管已过期的锁；活跃锁直接返回 ResourceBusy。
   private def acquire(resource: ResourceRef, operationId: OperationId, lockName: DeploymentName): IO[ControlPlaneError, LockLease] =
@@ -43,7 +43,7 @@ final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCo
           .flatMap(raw =>
             parseLock(raw) match
               case Some(existing) if existing.expiresAt.isBefore(Instant.now()) =>
-                api.delete(resource.namespace, ResourceKind.OperationLock, lockName.nameValue, existing.uid)
+                api.delete(resource.namespace, ResourceKind.OperationLock, lockName.nameValue, existing.uid, existing.resourceVersion)
                   .unit *> createLock(resource, operationId, lockName).mapError {
                     case KubernetesApiError(409, _) => ControlPlaneError.ResourceBusy(resource)
                     case error => toStoreFailure(error)
@@ -104,7 +104,7 @@ final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCo
       val spec = value.obj.get("spec").flatMap(_.objOpt)
       val uid = metadata.flatMap(_.get("uid")).flatMap(_.strOpt).flatMap(ResourceUid.from(_).toOption)
       val expiresAt = spec.flatMap(_.get("leaseUntil")).flatMap(_.strOpt).flatMap(value => scala.util.Try(Instant.parse(value)).toOption)
-      expiresAt.map(value => ExistingLock(uid, value))
+      expiresAt.map(value => ExistingLock(uid, metadata.flatMap(_.get("resourceVersion")).flatMap(_.strOpt), value))
     }
 
   private def metadataUid(raw: String): Option[ResourceUid] =

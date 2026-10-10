@@ -18,6 +18,46 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
   private val operation = FlinkOperation.Deploy(FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1)))
 
   def spec = suite("async operation worker")(
+    test("a replica that cannot acquire the lease leaves the operation untouched") {
+      for
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-busy-replica").toOption.get, operation)
+        coordinator = new ResourceCoordinator:
+          def withLock[A](resource: ResourceRef, operationId: OperationId)(effect: IO[ControlPlaneError, A]) = ZIO.fail(ControlPlaneError.ResourceBusy(resource))
+        api = new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(IllegalStateException("must not submit"))
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) = ZStream.empty
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, coordinator = coordinator)
+        result <- worker.process(accepted.operationId).either
+        stored <- store.get(accepted.operationId)
+      yield assertTrue(result.isLeft, stored.exists(_.state == OperationState.Accepted), stored.exists(_.events.size == 1))
+    },
+    test("recovery after the durable submission boundary never repeats a write") {
+      for
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-write-gap").toOption.get, operation)
+        _ <- store.transition(accepted.operationId, OperationEvent.ValidationStarted(Instant.now()))
+        _ <- store.transition(accepted.operationId, OperationEvent.ValidationPassed(Instant.now()))
+        calls <- Ref.make(0)
+        api = new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = calls.update(_ + 1).as("{}")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+        observer = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) = ZStream.empty
+        worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex)
+        _ <- worker.process(accepted.operationId).either
+        stored <- store.get(accepted.operationId)
+        writes <- calls.get
+      yield assertTrue(writes == 0, stored.exists(_.state == OperationState.Uncertain))
+    },
     test("submits, observes and completes a deployment operation") {
       for
         api <- ZIO.succeed(new KubernetesApi:

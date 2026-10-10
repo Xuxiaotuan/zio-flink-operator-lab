@@ -24,6 +24,8 @@ trait KubernetesApi:
   def get(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
   def delete(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
   def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid]): IO[Throwable, String] = delete(namespace, kind, name)
+  /** 带 UID/resourceVersion 前置条件删除，避免接管过期锁时误删续租后的对象。 */
+  def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid], resourceVersion: Option[String]): IO[Throwable, String] = delete(namespace, kind, name, uid)
   def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String): IO[Throwable, String]
   def watch(namespace: Namespace, kind: ResourceKind, name: String): ZStream[Any, Throwable, WatchEvent] =
     watchFrom(namespace, kind, Some(name), None)
@@ -91,11 +93,18 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
   override def delete(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String] =
     request("DELETE", resourcePath(namespace, apiResource(kind), name))
 
-  override def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid]): IO[Throwable, String] =
+  override def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid]): IO[Throwable, String] = delete(namespace, kind, name, uid, None)
+
+  override def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid], resourceVersion: Option[String]): IO[Throwable, String] =
     request(
       method = "DELETE",
       path = resourcePath(namespace, apiResource(kind), name),
-      body = uid.map(value => ujson.Obj("preconditions" -> ujson.Obj("uid" -> value.resourceUidValue)).render())
+      body = if uid.nonEmpty || resourceVersion.nonEmpty then Some(ujson.Obj(
+        "preconditions" -> ujson.Obj.from(Seq(
+          uid.map(value => "uid" -> ujson.Str(value.resourceUidValue)),
+          resourceVersion.map(value => "resourceVersion" -> ujson.Str(value))
+        ).flatten.toMap)
+      ).render()) else None
     )
 
   override def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String): IO[Throwable, String] =

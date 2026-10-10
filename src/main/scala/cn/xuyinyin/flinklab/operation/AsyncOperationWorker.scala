@@ -44,40 +44,43 @@ final class DefaultAsyncOperationWorker(
         case None => process(accepted.operationId).forkDaemon.unit
     yield accepted
 
-  /** 进程内互斥只保护本副作用；跨副本一致性由 OperationStore 和资源锁保证。 */
+  /** 先获得跨副本租约，再重新读取操作；竞争失败的副本没有写审计事件的权限。 */
   override def process(id: OperationId): IO[ControlPlaneError, Operation] = mutex.withPermit {
-    for
-      current <- getRequired(id)
-      completed <- current.state match
-        case OperationState.Accepted =>
-          // 第一次处理必须先写入 VALIDATION_STARTED，再获取资源租约。
-          for
-            claimed <- transition(id, OperationEvent.ValidationStarted(Instant.now()))
-            result <- coordinator.withLock(claimed.resource, id)(runOperation(id, claimed))
-          yield result
-        case OperationState.Validating =>
-          // 进程在校验阶段重启时可以安全继续，因为还没有重新提交资源。
-          coordinator.withLock(current.resource, id)(runOperation(id, current))
-        case OperationState.Submitted | OperationState.WaitingForObservation | OperationState.Reconciling | OperationState.Verifying =>
-          // 已提交阶段绝不能再次 apply；只恢复观察和验证。
-          coordinator.withLock(current.resource, id)(resumeOperation(id, current))
-        case _ => ZIO.succeed(current)
-    yield completed
-  }.catchAll { error =>
-    terminalize(id, error) *> ZIO.fail(error)
+    getRequired(id).flatMap { candidate =>
+      if !AsyncOperationWorker.isActive(candidate) then ZIO.succeed(candidate)
+      else coordinator.withLock(candidate.resource, id) {
+        getRequired(id).flatMap { current =>
+          val execute = current.state match
+            case OperationState.Accepted =>
+              transition(id, OperationEvent.ValidationStarted(Instant.now())).flatMap(runOperation(id, _))
+            case OperationState.Validating if current.events.exists(_.isInstanceOf[OperationEvent.ValidationPassed]) =>
+              // ValidationPassed 是持久化的写入边界：没有 Submitted 回执时无法排除请求已生效。
+              ZIO.fail(ControlPlaneError.UncertainFailure("submission acknowledgement is missing; refusing to repeat a possible Kubernetes write"))
+            case OperationState.Validating => runOperation(id, current)
+            case OperationState.Submitted | OperationState.WaitingForObservation | OperationState.Reconciling | OperationState.Verifying =>
+              resumeOperation(id, current)
+            case _ => ZIO.succeed(current)
+          execute.catchAll {
+            // 持久化失败不能解释成业务失败；由下一轮扫描重新读取，再决定是否恢复或保留不确定。
+            case error: ControlPlaneError.StoreFailure => ZIO.fail(error)
+            case error => terminalize(id, error) *> ZIO.fail(error)
+          }
+        }
+      }
+    }
   }
 
   // Pod 重启或重复投递时，从已持久化的事件阶段恢复，而不是重新提交资源。
   private def resumeOperation(id: OperationId, current: Operation): IO[ControlPlaneError, Operation] =
     for
       _ <- current.state match
-        // Submitted 必须按持久化状态机逐步推进，不能用旧快照连续写两个互相冲突的事件。
+        // 将 Submitted 的两个合法推进集中在同一分支，便于审查恢复顺序。
         case OperationState.Submitted =>
           transition(id, OperationEvent.WaitingForObservation(Instant.now())).unit *>
             transition(id, OperationEvent.VerificationStarted(Instant.now())).unit
         case OperationState.WaitingForObservation | OperationState.Reconciling =>
           transition(id, OperationEvent.VerificationStarted(Instant.now())).unit
-        case OperationState.Verifying | _ => ZIO.unit
+        case _ => ZIO.unit
       target = observationTarget(id, current)
       expectedGeneration = current.events.collect { case OperationEvent.Submitted(_, generation, _, _) => generation }.lastOption.flatten
       // 继续使用提交时记录的 generation，避免旧版本 READY 被误认成当前操作成功。
@@ -258,6 +261,9 @@ final class DefaultAsyncOperationWorker(
     }.getOrElse((None, None, None))
 
 object AsyncOperationWorker:
+  private[operation] def isActive(operation: Operation): Boolean =
+    Set(OperationState.Accepted, OperationState.Validating, OperationState.Submitted, OperationState.WaitingForObservation, OperationState.Reconciling, OperationState.Verifying).contains(operation.state)
+
   val live: ZLayer[KubernetesApi & OperationStore & PolicyEngine & ResourceCoordinator, Nothing, AsyncOperationWorker] =
     ZLayer.scoped {
       for
@@ -266,10 +272,15 @@ object AsyncOperationWorker:
         policy <- ZIO.service[PolicyEngine]
         coordinator <- ZIO.service[ResourceCoordinator]
         mutex <- OperationMutex.make
-        queue <- Queue.unbounded[OperationId]
+        queue <- Queue.dropping[OperationId](256)
         worker = new DefaultAsyncOperationWorker(api, cn.xuyinyin.flinklab.operator.observer.ResourceObserver.live(api), DefaultVerificationEngine, store, mutex, policy, coordinator, Some(queue))
-        pending <- store.list.tapError(error => Console.printLineError("operation recovery scan failed: " + error.message).ignore).catchAll(_ => ZIO.succeed(List.empty[Operation]))
-        _ <- ZIO.foreachDiscard(pending.filter(operation => Set(OperationState.Accepted, OperationState.Validating, OperationState.Submitted, OperationState.WaitingForObservation, OperationState.Reconciling, OperationState.Verifying).contains(operation.state)))(operation => queue.offer(operation.id))
-        _ <- queue.take.flatMap(worker.process).catchAll(error => Console.printLineError(s"operation worker failed: ${error.message}").ignore).forever.forkScoped
+        // 队列只负责低延迟调度，持久化 Operation 才是工作来源；满队列、进程退出都不会丢失请求。
+        _ <- (store.list.flatMap(operations => ZIO.foreachDiscard(operations.filter(isActive))(operation => queue.offer(operation.id)))
+          .catchAll(error => Console.printLineError("operation recovery scan failed: " + error.message).ignore) *>
+          ZIO.sleep(5.seconds)).forever.forkScoped
+        _ <- queue.take.flatMap(worker.process).catchAll {
+          case _: ControlPlaneError.ResourceBusy => ZIO.unit // 另一副本持有租约，留给下一轮扫描。
+          case error => Console.printLineError(s"operation worker failed: ${error.message}").ignore
+        }.forever.forkScoped
       yield worker
     }

@@ -13,7 +13,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
 
-本轮实际结果：`sbt -batch test` 通过 104 个测试；`sbt -batch assembly` 成功生成 assembly（SHA-1 `64c16508b960d411937c5d81538cc96cea45bda7`）；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
+本轮基线结果：`sbt -batch test` 通过 114 个测试；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `502da33e1a0dd1c50b114afe5685f53d139b38c5`）；本地 `docker build -f job/Dockerfile` 成功生成带 S3 插件和 StatefulCounterJob 的测试镜像。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复、单副本故障演练、锁租约接管和 PostgreSQL 双节点运行已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。控制面压力与长稳测试的结果记录在本页最新现场验收中。
 

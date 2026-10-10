@@ -16,17 +16,28 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
 
   /** 读取当前 CR、按领域状态机推进，再带 resourceVersion patch 回 API Server。 */
   override def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation] =
-    for
-      namespace <- ZIO.succeed(Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity))
-      raw <- api.get(namespace, ResourceKind.Operation, id.operationIdValue).mapError {
-        case KubernetesApiError(404, _) => ControlPlaneError.OperationNotFound(id)
-        case error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
-      }
-      current <- ZIO.fromEither(KubernetesOperationResource.parse(raw).map(Some(_))).mapError(error => ControlPlaneError.StoreFailure(error)).flatMap(ZIO.fromOption(_).orElseFail(ControlPlaneError.OperationNotFound(id)))
-      next <- ZIO.fromEither(current.advance(event))
-      patch = KubernetesOperationResource.render(next, KubernetesOperationResource.resourceVersion(raw))
-      _ <- api.patch(next.resource.namespace, ResourceKind.Operation, id.operationIdValue, patch).mapError(error => transitionError(id, error))
-    yield next
+    val namespace = Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity)
+    def attempt(remaining: Int): IO[ControlPlaneError, Operation] =
+      for
+        raw <- api.get(namespace, ResourceKind.Operation, id.operationIdValue).mapError {
+          case KubernetesApiError(404, _) => ControlPlaneError.OperationNotFound(id)
+          case error => transitionError(id, error)
+        }
+        current <- ZIO.fromEither(KubernetesOperationResource.parse(raw)).mapError(ControlPlaneError.StoreFailure.apply)
+        // 上一次写入响应丢失后重试相同事件，不能重复追加审计记录。
+        next <- if current.events.contains(event) then ZIO.succeed(current) else
+          for
+            advanced <- ZIO.fromEither(current.advance(event))
+            response <- api.patch(advanced.resource.namespace, ResourceKind.Operation, id.operationIdValue,
+              KubernetesOperationResource.render(advanced, KubernetesOperationResource.resourceVersion(raw))).either
+            result <- response match
+              case Right(_) => ZIO.succeed(advanced)
+              // 每次冲突重新读 CR、重新校验状态机；绝不重发带旧 resourceVersion 的文档。
+              case Left(KubernetesApiError(409, _)) if remaining > 0 => ZIO.yieldNow *> attempt(remaining - 1)
+              case Left(error) => ZIO.fail(transitionError(id, error))
+          yield result
+      yield next
+    attempt(3)
 
   override def get(id: OperationId): IO[ControlPlaneError, Option[Operation]] =
     val namespace = Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity)

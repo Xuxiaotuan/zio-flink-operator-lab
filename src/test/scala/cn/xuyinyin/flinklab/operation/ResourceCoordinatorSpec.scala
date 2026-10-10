@@ -68,6 +68,22 @@ object ResourceCoordinatorSpec extends ZIOSpecDefault:
         result <- fiber.join
       yield assertTrue(result.isLeft)
     },
+    test("does not steal a lease renewed after the expiry read") {
+      for
+        unsafeDeletes <- Ref.make(0)
+        entered <- Ref.make(false)
+        api = new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException())
+          override def create(namespace: Namespace, resource: String) = ZIO.fail(KubernetesApiError(409, "exists"))
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("""{"metadata":{"uid":"same-uid","resourceVersion":"old-rv"},"spec":{"leaseUntil":"2020-01-01T00:00:00Z"}}""")
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = unsafeDeletes.update(_ + 1).as("deleted")
+          override def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid], resourceVersion: Option[String]) = ZIO.fail(KubernetesApiError(409, "resourceVersion changed"))
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.fail(UnsupportedOperationException())
+        _ <- new KubernetesResourceCoordinator(api).withLock(target, OperationId.from("contender").toOption.get)(entered.set(true)).either
+        deletes <- unsafeDeletes.get
+        executed <- entered.get
+      yield assertTrue(deletes == 0, !executed)
+    },
     test("rejects a live lock without deleting it") {
       for
         calls <- Ref.make(Vector.empty[String])

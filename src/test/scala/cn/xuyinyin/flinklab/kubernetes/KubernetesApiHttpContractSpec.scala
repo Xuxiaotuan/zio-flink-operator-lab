@@ -95,9 +95,9 @@ object KubernetesApiHttpContractSpec extends ZIOSpecDefault:
           state <- ZIO.succeed(new FakeServerState)
           server <- ZIO.acquireRelease(ZIO.attempt(startServer(state)))(server => ZIO.succeed(server.stop(0)))
           api = client(server)
-          _ <- api.delete(Namespace.unsafe("analytics"), ResourceKind.Deployment, "orders", ResourceUid.from("uid-1").toOption)
+          _ <- api.delete(Namespace.unsafe("analytics"), ResourceKind.Deployment, "orders", ResourceUid.from("uid-1").toOption, Some("7"))
           requests <- ZIO.succeed(state.requests.asScala.toList)
-        yield assertTrue(requests.headOption.exists(request => request.method == "DELETE" && request.body.contains("\"uid\":\"uid-1\"")))
+        yield assertTrue(requests.headOption.exists(request => request.method == "DELETE" && request.body.contains("\"uid\":\"uid-1\"") && request.body.contains("\"resourceVersion\":\"7\"")))
       },
       test("does not retry a forbidden response") {
         for
