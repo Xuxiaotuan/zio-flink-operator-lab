@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 const source = await readFile(new URL('../../main/resources/web/app.js', import.meta.url), 'utf8');
-const { createClient, observeOperation, classifyState, makeRequestId, ensureRequestId, manifestTemplate, errorMessage } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { createClient, observeOperation, classifyState, makeRequestId, ensureRequestId, manifestTemplate, errorMessage, resourceStateClass, filterJobs, snapshotsForJob } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 const reply = (status, body) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) });
 test('job action encodes namespace/name, preserves requestId and requests strict savepoint restart', async () => {
@@ -129,4 +129,22 @@ test('stateful directory aliases are accepted and policy is preserved', async ()
 test('operator JSON errors expose their message and retain plain text errors', () => {
   assert.equal(errorMessage('{"type":"ValidationException","message":"checkpoint missing"}'), 'checkpoint missing');
   assert.equal(errorMessage('plain failure'), 'plain failure');
+});
+
+test('job and operation states have separate semantics', () => {
+  assert.equal(resourceStateClass('RUNNING'), 'success');
+  assert.equal(resourceStateClass('FINISHED'), 'success');
+  assert.equal(classifyState('RUNNING'), 'waiting');
+  assert.equal(resourceStateClass('FAILED'), 'error');
+  assert.equal(resourceStateClass(undefined), 'waiting');
+});
+test('job filtering combines name and effective status', () => {
+  const items = [{name:'Orders',jobState:'RUNNING'}, {name:'failed-order',lifecycleState:'FAILED'}];
+  assert.deepEqual(filterJobs(items, 'ORDER', 'FAILED'), [items[1]]);
+  assert.equal(filterJobs(items, 'missing', '').length, 0);
+});
+test('selected job snapshots exclude other resources and session jobs', () => {
+  const own = {name:'sp1',jobReferenceName:'orders',jobReferenceKind:'FlinkDeployment'};
+  const other = {name:'sp2',jobReferenceName:'orders',jobReferenceKind:'FlinkSessionJob'};
+  assert.deepEqual(snapshotsForJob([own,other,{jobReferenceName:'another',jobReferenceKind:'FlinkDeployment'}], 'orders'), [own]);
 });

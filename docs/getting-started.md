@@ -49,6 +49,8 @@ open http://127.0.0.1:18082/
 - **发布**：执行 Kubernetes dry-run 或提交异步 `FlinkOperation`；
 - **操作记录**：按 `operationId` 轮询审计事件，区分 `ACCEPTED`、`COMPLETED`、`FAILED` 和 `UNCERTAIN`。
 
+工作台的作业页参考 Flink 运维控制台组织：左侧作业列表，右侧按“概览 / Checkpoint / Savepoint / 配置 / 操作”查看单个作业；发布页使用编辑器和提交参数分栏布局。状态标签和操作结果都来自 HTTP API，不在前端臆造运行状态。
+
 浏览器只是 HTTP 客户端，不直接访问 Kubernetes。当前版本没有认证授权，服务只能部署在本机或受限内网。提交响应的 `202` 只代表请求已受理，不代表 Flink 作业已经完成。
 
 ## 提交 FlinkDeployment

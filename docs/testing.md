@@ -13,7 +13,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
 
-本轮基线结果：`sbt -batch test` 通过 115 个测试；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `52516048cdfa367fa9ae0a0760505fbdd38f06b9`）；`node --test src/test/web/app.test.mjs` 通过 14 个测试，`node --check src/main/resources/web/app.js` 通过，`mvn -B -f job/pom.xml package -DskipTests` 成功；前端 Nginx 镜像构建和 `nginx -t` 通过。
+本轮基线结果：`sbt -batch test` 通过 115 个测试；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `52516048cdfa367fa9ae0a0760505fbdd38f06b9`）；`node --test src/test/web/app.test.mjs` 通过 17 个测试，`node --check src/main/resources/web/app.js` 通过，`mvn -B -f job/pom.xml package -DskipTests` 成功；前端 Nginx 镜像构建和 `nginx -t` 通过。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复、单副本故障演练、锁租约接管和 PostgreSQL 双节点运行已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。控制面压力与长稳测试的结果记录在本页最新现场验收中。
 

@@ -12,7 +12,7 @@
 <body>
   <header class="global-bar">
     <a class="brand" href="#overview"><span class="brand-mark">Z</span><span>ZIO Flink<small>Control Plane</small></span></a>
-    <div class="global-context"><span class="context-label">NAMESPACE</span><code id="top-namespace">default</code><span class="connection-dot" aria-label="服务已连接"></span></div>
+    <div class="global-context"><span class="context-label">NAMESPACE</span><code id="top-namespace">default</code></div>
     <div class="global-actions"><span class="service-version">Kubernetes API</span><a href="#operations">操作记录</a></div>
   </header>
   <div class="shell">
@@ -24,7 +24,7 @@
         <a href="#publish" data-view="publish"><span class="nav-icon">＋</span>发布</a>
         <a href="#operations" data-view="operations"><span class="nav-icon">↗</span>操作</a>
       </nav>
-      <div class="rail-foot"><span class="connection-dot"></span><span>Operator 在线</span></div>
+      <div class="rail-foot"><span>Flink Kubernetes Operator</span></div>
     </aside>
     <main>
       <div class="context-bar">
@@ -36,7 +36,7 @@
         </form>
       </div>
       <section id="overview" class="view">
-        <div class="page-heading"><div><p class="eyebrow">OVERVIEW</p><h1>运行总览</h1><p>观察 FlinkDeployment 和最近的操作结果。</p></div><div class="heading-meta"><span id="updated" class="muted">尚未刷新</span><a class="button primary" href="#publish">发布作业</a></div></div>
+        <div class="page-heading"><div><p class="eyebrow">OVERVIEW</p><h1>运行总览</h1><p>查看作业运行状态、调谐进度与快照。</p></div><div class="heading-meta"><span id="updated" class="muted">尚未刷新</span><a class="button primary" href="#publish">发布作业</a></div></div>
         <div id="overview-message" class="message" role="status" aria-live="polite">正在连接服务…</div>
         <div class="metrics">
           <article><span>全部作业</span><strong id="metric-total">—</strong><small>FlinkDeployment</small></article>
@@ -45,7 +45,7 @@
           <article><span>快照记录</span><strong id="metric-snapshots">—</strong><small>Snapshot CR</small></article>
         </div>
         <div class="section-label"><h2>作业状态</h2><a href="#jobs">查看全部作业 →</a></div>
-        <div class="panel table-panel"><div id="overview-jobs" class="empty">尚未获得作业状态。</div></div>
+        <div class="panel table-panel"><div class="table-toolbar"><label for="job-search">筛选作业</label><input id="job-search" type="search" placeholder="按作业名称搜索"><label for="job-state-filter">状态</label><select id="job-state-filter"><option value="">全部状态</option><option>RUNNING</option><option>FINISHED</option><option>FAILED</option><option>UNKNOWN</option></select></div><div id="overview-jobs" class="empty">尚未获得作业状态。</div></div>
       </section>
       <section id="jobs" class="view" hidden>
         <div class="page-heading"><div><p class="eyebrow">FLINK JOBS</p><h1>作业</h1><p>查看运行状态、资源版本和状态快照。</p></div><div class="heading-meta"><span id="jobs-count" class="muted">—</span><a class="button primary" href="#publish">发布作业</a></div></div>
@@ -53,17 +53,17 @@
         <div class="job-workspace">
           <div class="panel job-list-panel"><div class="panel-heading"><div><span class="eyebrow">DEPLOYMENTS</span><h2>作业列表</h2></div></div><div id="job-list" class="empty">尚未获得作业列表。</div></div>
           <div class="panel job-detail-panel"><div class="detail-heading"><div><span class="eyebrow">SELECTED JOB</span><h2 id="job-title">作业详情</h2></div><span class="muted">Kubernetes API</span></div>
-            <div class="tabs" role="tablist" aria-label="作业详情"><button class="tab active" type="button" data-tab-target="job-overview">Overview</button><button class="tab" type="button" data-tab-target="job-snapshots">Checkpoints / Savepoints</button><button class="tab" type="button" data-tab-target="job-actions-panel">操作</button></div>
-            <div id="job-overview" class="tab-panel"><div id="job-details" class="empty">选择一个作业查看状态。</div></div>
-            <div id="job-snapshots" class="tab-panel" hidden><div id="snapshot-list" class="empty">尚未获得快照状态。</div></div>
-            <div id="job-actions-panel" class="tab-panel" hidden><div id="job-actions" hidden><label for="action-request-id">请求 ID</label><div class="id-field"><input id="action-request-id" placeholder="自动生成，也可手动填写" spellcheck="false"><button type="button" data-generate-id="action-request-id">生成新 ID</button></div><p class="field-help">重试保留原 ID；执行另一项操作前生成新 ID。</p><div class="actions"><button data-action="savepoint">Savepoint</button><button data-action="suspend-savepoint">保留状态暂停</button><button data-action="resume">恢复运行</button><button data-action="restart">Savepoint 重启</button></div></div><div class="empty action-empty">先从左侧选择一个作业。</div></div>
+            <div class="tabs" role="tablist" aria-label="作业详情"><button id="tab-job-overview" class="tab active" type="button" role="tab" aria-controls="job-overview" aria-selected="true" tabindex="0" data-tab-target="job-overview">概览</button><button id="tab-job-checkpoints" class="tab" type="button" role="tab" aria-controls="job-checkpoints" aria-selected="false" tabindex="-1" data-tab-target="job-checkpoints">Checkpoint</button><button id="tab-job-snapshots" class="tab" type="button" role="tab" aria-controls="job-snapshots" aria-selected="false" tabindex="-1" data-tab-target="job-snapshots">Savepoint</button><button id="tab-job-configuration" class="tab" type="button" role="tab" aria-controls="job-configuration" aria-selected="false" tabindex="-1" data-tab-target="job-configuration">配置</button><button id="tab-job-actions-panel" class="tab" type="button" role="tab" aria-controls="job-actions-panel" aria-selected="false" tabindex="-1" data-tab-target="job-actions-panel">操作</button></div>
+            <div id="job-overview" role="tabpanel" aria-labelledby="tab-job-overview" class="tab-panel"><div id="job-details" class="empty">选择一个作业查看状态。</div></div>
+            <div id="job-checkpoints" role="tabpanel" aria-labelledby="tab-job-checkpoints" class="tab-panel" hidden><div id="checkpoint-summary" class="empty">选择作业查看 Operator checkpoint 摘要。</div></div><div id="job-configuration" role="tabpanel" aria-labelledby="tab-job-configuration" class="tab-panel" hidden><pre id="job-config" class="config-json">选择作业查看配置。</pre></div><div id="job-snapshots" role="tabpanel" aria-labelledby="tab-job-snapshots" class="tab-panel" hidden><div id="savepoint-summary"></div><div class="panel-heading"><h2>该作业的快照请求</h2></div><div id="snapshot-list" class="empty">尚未获得快照状态。</div></div>
+            <div id="job-actions-panel" role="tabpanel" aria-labelledby="tab-job-actions-panel" class="tab-panel" hidden><div id="job-actions" hidden><label for="action-request-id">请求 ID</label><div class="id-field"><input id="action-request-id" placeholder="自动生成，也可手动填写" spellcheck="false"><button type="button" data-generate-id="action-request-id">生成新 ID</button></div><p class="field-help">重试保留原 ID；执行另一项操作前生成新 ID。</p><div class="actions"><button data-action="savepoint">Savepoint</button><button data-action="suspend-savepoint">保留状态暂停</button><button data-action="resume">恢复运行</button><button data-action="restart">Savepoint 重启</button></div></div><div class="empty action-empty">先从左侧选择一个作业。</div></div>
           </div>
         </div>
       </section>
       <section id="publish" class="view" hidden>
         <div class="page-heading"><div><p class="eyebrow">NEW DEPLOYMENT</p><h1>发布作业</h1><p>编辑 FlinkDeployment，提交后由 Operator 负责调谐。</p></div></div>
         <form id="publish-form" class="publish-layout">
-          <div class="panel editor-panel"><div class="panel-heading"><div><span class="eyebrow">MANIFEST</span><h2>作业配置</h2></div><span class="muted">JSON</span></div><div class="editor-body"><textarea id="manifest" rows="22" required spellcheck="false" aria-describedby="manifest-help"></textarea><p id="manifest-help" class="muted">默认示例使用 Flink 1.20.1 与 flink ServiceAccount。savepoint / last-state 需要配置 checkpoint 目录和快照目录。</p></div></div>
+          <div class="panel editor-panel"><div class="panel-heading"><div><span class="eyebrow">MANIFEST</span><h2>作业配置</h2></div><span class="muted">JSON</span></div><div class="editor-body"><label for="manifest" class="sr-only">FlinkDeployment JSON</label><textarea id="manifest" rows="22" required spellcheck="false" aria-describedby="manifest-help"></textarea><p id="manifest-help" class="muted">默认示例使用 Flink 1.20.1 与 flink ServiceAccount。示例为无状态 WordCount，运行完自动结束。有状态作业需配置 checkpoint 目录，savepoint 模式还需快照目录。</p></div></div>
           <aside class="publish-aside"><div class="panel publish-settings"><div class="panel-heading"><div><span class="eyebrow">SUBMISSION</span><h2>提交参数</h2></div></div><div class="settings-body"><label for="publish-mode">操作类型</label><select id="publish-mode"><option value="deploy">创建作业</option><option value="upgrade">升级作业</option></select><label for="publish-request-id">请求 ID <span class="muted">requestId</span></label><div class="id-field"><input id="publish-request-id" placeholder="自动生成，也可手动填写" spellcheck="false"><button type="button" data-generate-id="publish-request-id">生成新 ID</button></div><p class="field-help">网络重试复用此 ID；新操作请生成新 ID。</p><div class="submit-actions"><button type="button" id="dry-run">预检查</button><button type="submit" class="primary" id="submit-publish">提交作业</button></div><div id="publish-message" class="message" role="status" aria-live="polite"></div></div></div><div class="panel publish-help"><div class="panel-heading"><h2>提交前检查</h2></div><ul><li>镜像和 jarURI 与集群版本匹配</li><li>ServiceAccount 具备 Flink 资源权限</li><li>有状态作业配置 RustFS 路径</li></ul></div></aside>
           <details id="dry-run-result" class="dry-run-result" hidden><summary>查看预检查返回值</summary><pre id="dry-run-json"></pre></details>
         </form>
@@ -71,7 +71,7 @@
       <section id="operations" class="view" hidden>
         <div class="page-heading"><div><p class="eyebrow">OPERATIONS</p><h1>操作记录</h1><p>查看提交、调谐和验证的完整事件链。</p></div></div>
         <form id="operation-form" class="lookup-bar"><label for="operation-id">操作 ID <span class="muted">operationId</span></label><div class="inline"><input id="operation-id" required spellcheck="false" placeholder="输入操作 ID"><button type="submit" class="primary">查询</button><button type="button" id="stop-poll" disabled>停止观察</button></div></form>
-        <div id="operation-message" class="message" role="status" aria-live="polite">提交操作后会自动跳转到这里。</div><div id="operation-result"></div>
+        <div id="operation-message" class="message" role="status" aria-live="polite">提交操作后会自动跳转到这里。</div><div id="operation-result"></div><div class="section-label recent-heading"><h2>本页最近查看</h2><span class="muted">刷新页面后清空</span></div><div id="recent-operations" class="panel empty">尚未查看操作。可用 operationId 查询持久化记录。</div>
       </section>
       <footer><span>ZIO Flink Control Plane</span><span>HTTP · Kubernetes API · Flink Operator</span></footer>
     </main>
