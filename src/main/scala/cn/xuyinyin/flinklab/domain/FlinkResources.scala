@@ -27,7 +27,8 @@ final case class FlinkJob(
     if args.nonEmpty then value("args") = Arr(args.map(Str.apply)*)
     initialSavepointPath.foreach(path => value("initialSavepointPath") = path.snapshotPathValue)
     allowNonRestoredState.foreach(flag => value("allowNonRestoredState") = Bool(flag))
-    savepointRedeployNonce.foreach(nonce => value("savepointRedeployNonce") = nonce)
+    // CRD schema 要求 nonce 是 JSON number；显式构造 Num，避免 Scala Long 被 ujson 当作字符串编码。
+    savepointRedeployNonce.foreach(nonce => value("savepointRedeployNonce") = ujson.Num(nonce.toDouble))
     value
 
 final case class FlinkProcessResources(cpu: Double = 1, memory: String = "1024m"):

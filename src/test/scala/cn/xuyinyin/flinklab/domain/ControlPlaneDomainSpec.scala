@@ -37,8 +37,10 @@ object ControlPlaneDomainSpec extends ZIOSpecDefault:
         )
         val deployment = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", job)
         val operation = Operation.accepted(RequestId.from("req-savepoint-redeploy").toOption.get, FlinkOperation.Deploy(deployment), resource, Instant.parse("2026-10-03T00:00:00Z"))
-        val restored = OperationCodec.fromJson(OperationCodec.json(operation))
+        val encoded = ujson.read(OperationCodec.json(operation))
+        val restored = OperationCodec.fromJson(encoded.render())
         assertTrue(
+          encoded("command")("spec")("spec")("job")("savepointRedeployNonce").num == 2,
           restored.toOption.exists {
             case Operation(_, _, FlinkOperation.Deploy(spec), _, _, _, _, _) =>
               spec.job.initialSavepointPath.exists(_.snapshotPathValue == "s3://bucket/savepoint-1") && spec.job.savepointRedeployNonce.contains(2L)
