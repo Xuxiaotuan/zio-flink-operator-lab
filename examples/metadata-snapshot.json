@@ -1,0 +1,18 @@
+{
+  "catalogId": "warehouse",
+  "schema": "public",
+  "version": "2026-10-10T00:00:00Z",
+  "observedAt": "2026-10-10T00:00:00Z",
+  "tables": [
+    {
+      "catalogId": "warehouse",
+      "schema": "public",
+      "name": "orders",
+      "observedAt": "2026-10-10T00:00:00Z",
+      "columns": [
+        {"name": "id", "dataType": "BIGINT", "nullable": false},
+        {"name": "status", "dataType": "VARCHAR", "nullable": true}
+      ]
+    }
+  ]
+}

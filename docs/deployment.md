@@ -32,7 +32,7 @@ kubectl -n flink-lineage-test rollout status deployment/zio-flink-operator --tim
 kubectl -n flink-lineage-test get pods -l app.kubernetes.io/name=zio-flink-operator -o wide
 ```
 
-本地 OrbStack 使用本机镜像和 `imagePullPolicy: IfNotPresent`。当前本地环境是单节点；API 两个副本和前端一个副本只能证明进程复制和 Service 路由，不证明跨节点高可用。API 两个副本使用 `maxSurge: 0`、`maxUnavailable: 1` 滚动更新，前端保持一个副本。`deploy/local` 设置 `ZIO_FLINK_STATE_BACKEND=kubernetes`。
+本地 OrbStack 使用本机镜像和 `imagePullPolicy: IfNotPresent`。当前本地环境是单节点；本地 API 保持单副本，前端也是单副本。它只能验证进程和 Service 路由，不证明跨节点高可用。API 目标集群使用 `maxSurge: 0`、`maxUnavailable: 1` 滚动更新，前端保持一个副本。`deploy/local` 设置 `ZIO_FLINK_STATE_BACKEND=kubernetes`，并显式使用 `ZIO_FLINK_METADATA_STORE=memory`；这只适合单进程/本地学习，双副本环境必须使用 PostgreSQL。
 
 在两台或更多节点的集群中，Deployment 的副本使用 hostname 反亲和偏好分散调度；Service 不使用会话亲和性，任一副本都能从 API Server 读取相同 CR 状态。
 
@@ -48,7 +48,7 @@ curl -fsS http://127.0.0.1:18080/readyz
 
 ## 两节点目标 Kubernetes
 
-目标集群的服务清单位于 `deploy/bigdata-lab`，部署一个两副本 ZIO API Deployment、一个 ClusterIP API Service，以及一个单副本前端 Deployment 和 NodePort Service。API 副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和偏好，前端只保留一个副本；前端使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
+目标集群的服务清单位于 `deploy/bigdata-lab`，部署一个两副本 ZIO API Deployment、一个 ClusterIP API Service，以及一个单副本前端 Deployment 和 NodePort Service。目录/血缘使用 PostgreSQL；部署前必须先按 `deploy/bigdata-lab/metadata-postgres-secret.example.yaml` 创建私有 Secret `zio-flink-postgres`，否则 API Pod 会因为缺少元数据凭据而拒绝启动。API 副本使用 `xjw`、`xxt` 两台节点的 hostname 反亲和偏好，前端只保留一个副本；前端使用 NodePort `30882`，镜像从 Harbor 拉取，RustFS savepoint 前缀为：
 
 ```text
 s3://flink-savepoints/zio-flink-operator/bigdata-lab/
@@ -118,7 +118,7 @@ sbt run
 http://<任一节点>:30882/
 ```
 
-前端静态资源由 `frontend/Dockerfile` 构建为 Nginx 镜像。工作台先从只读 `/v1/config` 读取服务默认 namespace，再通过反向代理访问 `/v1/deployments`、`/v1/snapshots`、`/v1/state` 和 `/v1/operations/{id}`，通过 HTTP POST 触发操作，并用有界轮询观察 Operation；初始 `202 ACCEPTED` 不会被显示为完成。
+前端静态资源由 `frontend/Dockerfile` 构建为 Nginx 镜像。工作台先从只读 `/v1/config` 读取服务默认 namespace，再通过反向代理访问 `/v1/catalogs`、`/v1/lineage/*`、`/v1/deployments`、`/v1/snapshots`、`/v1/state` 和 `/v1/operations/{id}`，通过 HTTP POST 触发操作，并用有界轮询观察 Operation；初始 `202 ACCEPTED` 不会被显示为完成。
 
 当前版本没有认证和授权。生产或共享集群必须使用私有 Service/Ingress、NetworkPolicy 或其他网络边界，只允许受信任的运维网络访问。相关字段见 [状态监控](monitoring.md)。
 
@@ -134,6 +134,10 @@ export POSTGRES_PORT=30660
 export POSTGRES_DB=xxt
 export POSTGRES_USER=root
 export POSTGRES_PASSWORD='由 Secret 注入'
+# Catalog / Schema / Lineage 与 OperationStore 共用同一 PostgreSQL，凭据只由 Secret 注入
+export ZIO_FLINK_METADATA_JDBC_URL="jdbc:postgresql://$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB"
+export ZIO_FLINK_METADATA_USER="$POSTGRES_USER"
+export ZIO_FLINK_METADATA_PASSWORD="$POSTGRES_PASSWORD"
 sbt run
 ```
 

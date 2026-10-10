@@ -32,13 +32,15 @@
 ```sh
 export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 export FLINK_NAMESPACE=flink-lineage-test
+# 本地单进程学习；多副本部署按 docs/metadata-lineage.md 配置 PostgreSQL。
+export ZIO_FLINK_METADATA_STORE=memory
 
 sbt -batch test
 sbt run
 curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-浏览器工作台在 Kubernetes 中由单副本 `zio-flink-operator-ui` 提供，ZIO API 由多副本 `zio-flink-operator` 提供。前端通过 Nginx 反向代理访问 `/v1/*`；CLI 不属于当前运行入口。服务没有认证授权，必须只在本地或受限内网开放。
+浏览器工作台在 Kubernetes 中由单副本 `zio-flink-operator-ui` 提供，ZIO API 由多副本 `zio-flink-operator` 提供。当前页面包含总览、作业、发布、操作、Catalog 目录和表级 SQL 静态血缘；目录与血缘数据必须由 API/ PostgreSQL 提供，不使用前端假数据。前端通过 Nginx 反向代理访问 `/v1/*`；CLI 不属于当前运行入口。服务没有认证授权，必须只在本地或受限内网开放。
 
 目标集群前端地址：
 
@@ -110,4 +112,4 @@ Kubernetes 部署默认使用 API Server 中的 Flink CR 作为多副本共享�
 
 当前服务读取 Operator CR 的状态摘要。逐个 checkpoint 的 task/subtask 明细需要 Flink REST，当前不属于 Kubernetes API 适配器。目标集群的 Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、Savepoint 恢复连续性、控制面 Pod 故障演练、FlinkOperationLock 租约接管和 PostgreSQL 双节点运行已有真实验收记录；压力和长稳指标覆盖控制面接口，不代表生产容量。
 
-构建、Kubernetes/RustFS 配置和本地多副本部署见 [部署](docs/deployment.md)；验证记录见 [测试与证据](docs/testing.md)。
+Catalog、Schema Snapshot 和 SQL 静态血缘见 [Catalog 与血缘](docs/metadata-lineage.md)。构建、Kubernetes/RustFS 配置和多副本部署见 [部署](docs/deployment.md)；验证记录见 [测试与证据](docs/testing.md)。

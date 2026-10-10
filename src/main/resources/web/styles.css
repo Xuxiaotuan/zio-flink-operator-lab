@@ -231,3 +231,9 @@ nav a[aria-current=page] .nav-icon { color: var(--surface); }
   .tabs { flex-wrap: wrap; padding: 0 8px; }
   .tab { padding: 8px; }
 }
+
+.catalog-layout { display: grid; grid-template-columns: minmax(260px, .7fr) minmax(0, 1.8fr); gap: 18px; }
+.catalog-layout .panel { min-height: 260px; }
+.catalog-layout table code, #lineage-result code { color: var(--ink); }
+#lineage-result { min-height: 220px; }
+@media (max-width: 900px) { .catalog-layout { grid-template-columns: 1fr; } }

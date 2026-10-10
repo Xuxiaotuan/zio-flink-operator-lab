@@ -5,7 +5,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [运行指南](getting-started.md) | 从构建到浏览器工作台、HTTP 提交、观察和快照请求的完整流程 |
-| [浏览器工作台](../src/main/resources/web/index.html) | 与 HTTP 服务同端口的总览、作业、发布和 Operation 页面 |
+| [浏览器工作台](../src/main/resources/web/index.html) | 与 HTTP 服务同端口的总览、作业、发布、目录、血缘和 Operation 页面 |
+| [Catalog 与血缘](metadata-lineage.md) | Catalog、Schema Snapshot、表级 SQL_STATIC 血缘和证据边界 |
 | [设计与协议](design.md) | 类型化操作、状态保护、Operation 状态机、ZIO 边界、Operator 协议和多副本边界 |
 | [架构图](diagrams/architecture.html) | 控制面、Kubernetes API、Flink Operator、Flink 和 RustFS 的组件关系 |
 | [Kubernetes 部署图](diagrams/deployment.html) | GitHub、Jenkins、Registry、两副本 Service 和 Flink 运行时 |

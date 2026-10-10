@@ -42,6 +42,12 @@ export function createClient(fetchImpl = window.fetch.bind(window)) {
     deployments: namespace => request(`/v1/deployments?${query({ namespace })}`),
     snapshots: namespace => request(`/v1/snapshots?${query({ namespace })}`),
     config: () => request("/v1/config"),
+    catalogs: () => request("/v1/catalogs"),
+    schemas: catalogId => request(`/v1/catalogs/${encodeURIComponent(catalogId)}/schemas`),
+    tables: (catalogId, schema) => request(`/v1/catalogs/${encodeURIComponent(catalogId)}/tables?${query({ schema })}`),
+    table: (catalogId, schema, name) => request(`/v1/catalogs/${encodeURIComponent(catalogId)}/tables/${encodeURIComponent(name)}?${query({ schema })}`),
+    lineage: root => request(`/v1/lineage/graph?${query({ root })}`),
+    submitStaticLineage: (sql, jobId) => request("/v1/lineage/sql", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sql, jobId }) }),
     state: namespace => request(`/v1/state?${query({ namespace })}`),
     deployment: (namespace, name) => request(`/v1/deployments/${encodeURIComponent(name)}?${query({ namespace })}`),
     status: (namespace, name) => request(`/v1/deployments/${encodeURIComponent(name)}/status?${query({ namespace })}`),
@@ -163,10 +169,10 @@ function init() {
   syncNamespace();
 
   function showView(id) {
-    if (!["overview", "jobs", "publish", "operations"].includes(id)) id = "overview";
+    if (!["overview", "jobs", "publish", "catalog", "lineage", "operations"].includes(id)) id = "overview";
     document.querySelectorAll(".view").forEach(view => { view.hidden = view.id !== id; });
     document.querySelectorAll("nav a[data-view]").forEach(link => link.setAttribute("aria-current", link.dataset.view === id ? "page" : "false"));
-    byId("current-view").textContent = ({ overview: "总览", jobs: "作业", publish: "发布", operations: "操作记录" })[id] || id;
+    byId("current-view").textContent = ({ overview: "总览", jobs: "作业", publish: "发布", catalog: "目录", lineage: "血缘", operations: "操作记录" })[id] || id;
   }
   function renderJobList(items, target = byId("job-list")) {
     target.classList.remove("empty");
@@ -197,6 +203,35 @@ function init() {
     target.classList.remove("empty");
     target.innerHTML = [...recentOperations.values()].reverse().map(operation => `<button class="job-choice" type="button" data-operation="${escapeHtml(operation.operationId)}"><span><strong>${escapeHtml(operation.resource?.name || "—")} · ${escapeHtml(operation.operationType || "操作")}</strong><span class="operation-key">${escapeHtml(operation.operationId)}</span></span>${stateBadge(operation.state)}</button>`).join("");
     target.querySelectorAll("[data-operation]").forEach(button => button.addEventListener("click", () => { byId("operation-id").value = button.dataset.operation; observe(button.dataset.operation); }));
+  }
+
+  function renderCatalogs(items) {
+    const target = byId("catalog-list");
+    target.innerHTML = items.length ? items.map(item => `<button class="job-choice" type="button" data-catalog="${escapeHtml(item.id)}"><strong>${escapeHtml(item.id)}</strong><small>${escapeHtml(item.type || item.catalogType || "catalog")} · ${escapeHtml(item.database || "—")}</small></button>`).join("") : '<div class="empty">暂无目录</div>';
+    target.querySelectorAll("[data-catalog]").forEach(button => button.addEventListener("click", () => loadCatalog(button.dataset.catalog)));
+  }
+  async function loadCatalog(id) {
+    byId("catalog-title").textContent = id;
+    byId("catalog-tables").textContent = "正在读取表…";
+    try {
+      const result = await client.tables(id);
+      const items = result.items || [];
+      byId("catalog-tables").innerHTML = items.length ? `<div class="table-wrap"><table><thead><tr><th>Schema</th><th>表</th><th>字段</th><th>观察时间</th></tr></thead><tbody>${items.map(item => `<tr><td>${escapeHtml(item.schema)}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml((item.columns || []).map(column => `${column.name}: ${column.dataType}`).join(", ") || "—")}</td><td>${escapeHtml(item.observedAt || "—")}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty">暂无表</div>';
+      setMessage(byId("catalog-message"), `已读取 ${items.length} 张表`, "success");
+    } catch (error) { setMessage(byId("catalog-message"), `目录读取失败：${error.message}`, "error"); byId("catalog-tables").innerHTML = '<div class="empty">暂无目录</div>'; }
+  }
+  async function refreshCatalogs() {
+    try { renderCatalogs((await client.catalogs()).items || []); setMessage(byId("catalog-message"), "目录状态已更新", "success"); }
+    catch (error) { setMessage(byId("catalog-message"), `目录读取失败：${error.message}`, "error"); byId("catalog-list").innerHTML = '<div class="empty">暂无目录</div>'; }
+  }
+  // SQL_STATIC is rendered as an inference label; runtime evidence is a separate source type.
+  function renderLineage(items) {
+    const target = byId("lineage-result");
+    target.innerHTML = items.length ? `<div class="table-wrap"><table><thead><tr><th>来源</th><th>目标</th><th>操作</th><th>证据</th><th>置信度</th></tr></thead><tbody>${items.map(edge => `<tr><td><code>${escapeHtml(edge.source?.name || "—")}</code></td><td><code>${escapeHtml(edge.target?.name || "—")}</code></td><td>${escapeHtml(edge.operation || "—")}</td><td><span class="badge" data-state="waiting">${escapeHtml(edge.sourceType || "UNKNOWN")}</span></td><td>${escapeHtml(String(edge.confidence ?? "—"))}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty">暂无血缘</div>';
+  }
+  async function refreshLineage(root) {
+    try { const result = await client.lineage(root); renderLineage(result.items || []); setMessage(byId("lineage-message"), result.items?.length ? "已加载静态血缘" : "没有可验证的血缘记录", result.items?.length ? "success" : "waiting"); }
+    catch (error) { renderLineage([]); setMessage(byId("lineage-message"), `血缘读取失败：${error.message}`, "error"); }
   }
 
   async function refresh() {
@@ -312,6 +347,8 @@ function init() {
   byId("publish-form").addEventListener("submit", async event => { event.preventDefault(); const submit = byId("submit-publish"); submit.disabled = true; submit.dataset.state = "loading"; try { const body = await client.publish(namespace(), JSON.parse(byId("manifest").value), byId("publish-mode").value, ensureRequestId(byId("publish-request-id"))); startOperation(body); } catch (error) { setMessage(byId("publish-message"), error.message, "error"); } finally { submit.disabled = false; delete submit.dataset.state; } });
   byId("dry-run").addEventListener("click", async () => { try { const body = await client.publish(namespace(), JSON.parse(byId("manifest").value), byId("publish-mode").value, "", true); byId("dry-run-result").hidden = false; byId("dry-run-json").textContent = JSON.stringify(body, null, 2); setMessage(byId("publish-message"), "Kubernetes dry-run 完成，未创建 operation。", "success"); } catch (error) { setMessage(byId("publish-message"), error.message, "error"); } });
   byId("operation-form").addEventListener("submit", event => { event.preventDefault(); observe(byId("operation-id").value.trim()); });
+  byId("lineage-form").addEventListener("submit", event => { event.preventDefault(); refreshLineage(byId("lineage-root").value.trim()); });
+  document.querySelector('a[data-view="catalog"]').addEventListener("click", refreshCatalogs);
   byId("stop-poll").addEventListener("click", () => pollController?.abort());
   // 一个 ID 对应一次操作意图；只有用户点击“生成新 ID”才主动换键。
   document.querySelectorAll("[data-generate-id]").forEach(button => button.addEventListener("click", () => {

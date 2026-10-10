@@ -11,9 +11,9 @@ sbt -batch assembly
 mvn -B -f job/pom.xml package -DskipTests
 ```
 
-当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询。
+当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询；本轮增加 Catalog/Schema Snapshot、PostgreSQL 元数据适配器、表级 SQL_STATIC 血缘解析和目录/血缘 HTTP 契约。
 
-本轮基线结果：`sbt -batch test` 通过 115 个测试；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `52516048cdfa367fa9ae0a0760505fbdd38f06b9`）；`node --test src/test/web/app.test.mjs` 通过 17 个测试，`node --check src/main/resources/web/app.js` 通过，`mvn -B -f job/pom.xml package -DskipTests` 成功；前端 Nginx 镜像构建和 `nginx -t` 通过。
+本轮基线结果：`sbt -batch test` 通过 129 个测试（1 个未配置测试 PostgreSQL 的契约用例按条件跳过）；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `20e591858e98bcbdaf9dc8f043cd4df8d7896cc3`）；`node --test src/test/web/app.test.mjs` 通过 19 个测试，`node --check src/main/resources/web/app.js` 通过，`mvn -B -f job/pom.xml package -DskipTests` 成功；前后端镜像构建通过，Nginx 在为本地校验容器补充 `zio-flink-operator=127.0.0.1` upstream 映射后 `nginx -t` 通过。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复、单副本故障演练、锁租约接管和 PostgreSQL 双节点运行已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。控制面压力与长稳测试的结果记录在本页最新现场验收中。
 
@@ -79,7 +79,7 @@ mvn -B -f job/pom.xml package -DskipTests
 
 本轮现场证据覆盖了运行中 Job 的 checkpoint、savepoint、RustFS 结果路径和 savepoint 恢复连续性；对已结束 Job 的 savepoint operation `dfa0f661-22ad-4f07-9ccd-77101c6d95f3` 仍保留为负向契约证据，审计事件记录 Operator 的 `ABANDONED` 原因（目标 Job 不在运行）。
 
-此前 build `#11` 的 Source 阶段曾因 GitHub 连接重置而 `external_blocked`；后续 PipelineRun `#22` 已成功，因此当前提交已有完整 CI/CD 证据。历史失败仍保留用于说明重试配置的背景。
+此前 build `#11` 的 Source 阶段曾因 GitHub 连接重置而 `external_blocked`；后续 PipelineRun `#22` 已成功，说明当时的已推送基线具备 CI/CD 证据。当前目录/血缘改动尚未提交或推送，不能把这些历史 PipelineRun 当作本轮改动的 CI/CD 结果。
 
 ## 测试覆盖
 

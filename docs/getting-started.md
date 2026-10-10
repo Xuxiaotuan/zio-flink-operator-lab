@@ -15,6 +15,8 @@
 ```sh
 export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 export FLINK_NAMESPACE=flink-lineage-test
+# 本地单进程学习使用内存元数据；多副本部署必须改用 PostgreSQL。
+export ZIO_FLINK_METADATA_STORE=memory
 kubectl config current-context
 kubectl get crd flinkdeployments.flink.apache.org flinksessionjobs.flink.apache.org flinkstatesnapshots.flink.apache.org
 ```

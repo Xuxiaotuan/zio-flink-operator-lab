@@ -9,6 +9,8 @@ import cn.xuyinyin.flinklab.state.{KubernetesStateStore, StateJournal, StateKey,
 import cn.xuyinyin.flinklab.application.FlinkOperationFactory
 import cn.xuyinyin.flinklab.domain.*
 import cn.xuyinyin.flinklab.operation.{AcceptedOperation, AsyncOperationWorker, OperationStore}
+import cn.xuyinyin.flinklab.metadata.{MetadataJson, MetadataStore}
+import cn.xuyinyin.flinklab.lineage.SqlLineageParser
 import zio.*
 
 /** HTTP 请求的最小内部表示，便于路由层脱离具体 Web Server。 */
@@ -58,18 +60,26 @@ object KubernetesHttpApi:
   def handleWith(api: KubernetesApi, store: StateStore, operationStore: OperationStore, worker: AsyncOperationWorker, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
     routeWithWorker(request, settings, worker, Some(operationStore)).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
 
-  private def routeWithWorker(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+  /** 元数据测试和独立部署入口；元数据写入不经过 FlinkOperation。 */
+  def handleWith(api: KubernetesApi, store: StateStore, metadataStore: MetadataStore, worker: AsyncOperationWorker, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
+    routeWithWorker(request, settings, worker, None, Some(metadataStore)).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
+
+  /** 生产入口同时携带 OperationStore 与 PostgreSQL MetadataStore，确保双副本读取同一目录。 */
+  def handleWith(api: KubernetesApi, store: StateStore, metadataStore: MetadataStore, operationStore: OperationStore, worker: AsyncOperationWorker, request: ApiRequest, settings: KubernetesHttpSettings): UIO[ApiResponse] =
+    routeWithWorker(request, settings, worker, Some(operationStore), Some(metadataStore)).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
+
+  private def routeWithWorker(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore], metadataStore: Option[MetadataStore] = None): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     request.query.get("dryRun").map(_.trim.toLowerCase) match
       case Some("true") =>
         request.path.split('/').toList.filter(_.nonEmpty) match
           case "v1" :: "deployments" :: Nil => applyDeployment(request, settings)
           case "v1" :: "snapshots" :: Nil => createSnapshot(request, settings)
           case _ => ZIO.fail(IllegalArgumentException("dryRun is only supported for deployment and snapshot apply requests"))
-      case Some("false") | None => routeWithWorkerMutation(request, settings, worker, operationStore)
+      case Some("false") | None => routeWithWorkerMutation(request, settings, worker, operationStore, metadataStore)
       case Some(value) => ZIO.fail(IllegalArgumentException(s"dryRun must be true or false, got: $value"))
 
   // 所有 HTTP 变更在这里先解析成 FlinkOperation，再交给同一个 worker。
-  private def routeWithWorkerMutation(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+  private def routeWithWorkerMutation(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore], metadataStore: Option[MetadataStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
       case ("POST", "v1" :: "deployments" :: Nil) =>
         // 创建/更新部署统一生成 FlinkOperation，不直接 apply CR。
@@ -147,7 +157,7 @@ object KubernetesHttpApi:
               operationId <- ZIO.fromEither(cn.xuyinyin.flinklab.domain.OperationId.from(id).left.map(IllegalArgumentException(_)))
               operation <- store.get(operationId).mapError(error => IllegalArgumentException(error.message))
             yield operation.map(value => ok(value.json.render())).getOrElse(ApiResponse(404, errorJson("operation not found")))
-      case _ => route(request, settings)
+      case _ => route(request, settings, metadataStore)
 
   // 没有显式 requestId 时生成一次性幂等键；客户端重试应主动复用 requestId。
   private def requestId(request: ApiRequest): RequestId = RequestId.from(request.query.getOrElse("requestId", java.util.UUID.randomUUID().toString)).fold(_ => RequestId.generate(), identity)
@@ -156,13 +166,45 @@ object KubernetesHttpApi:
     ApiResponse(status, ujson.Obj("operationId" -> accepted.operationId.operationIdValue, "requestId" -> accepted.requestId.requestIdValue, "state" -> "ACCEPTED", "acceptedAt" -> accepted.acceptedAt.toString).render())
 
   /** 查询、dry-run 和兼容的直接 CR 路由。真正变更请求由上面的 worker 路由优先处理。 */
-  private def route(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+  private def route(request: ApiRequest, settings: KubernetesHttpSettings, metadataStore: Option[MetadataStore] = None): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
       case ("GET", "healthz" :: Nil) | ("GET", "readyz" :: Nil) =>
         ZIO.succeed(ok("{\"status\":\"ok\"}"))
       case ("GET", "v1" :: "config" :: Nil) =>
         // 前端只读取非敏感运行配置，避免把部署环境的 namespace 硬编码进静态资源。
         ZIO.succeed(ok(ujson.Obj("namespace" -> settings.defaultNamespace).render()))
+      case ("GET", "v1" :: "catalogs" :: Nil) => metadata(metadataStore).flatMap(_.listCatalogs).mapError(e => readable(e)).map(values => ok(ujson.Obj("items" -> ujson.Arr(values.map(_.json)*)) .render()))
+      case ("POST", "v1" :: "catalogs" :: Nil) =>
+        for
+          store <- metadata(metadataStore)
+          body <- parseJson(request.body)
+          catalog <- ZIO.fromEither(MetadataJson.catalog(body).left.map(IllegalArgumentException(_)))
+          created <- store.createCatalog(catalog).mapError(error => IllegalArgumentException(error.message))
+        yield ApiResponse(201, created.json.render())
+      case ("POST", "v1" :: "catalogs" :: catalogId :: "snapshots" :: Nil) =>
+        for
+          store <- metadata(metadataStore)
+          body <- parseJson(request.body)
+          snapshot <- ZIO.fromEither(MetadataJson.snapshot(body).left.map(IllegalArgumentException(_)))
+          _ <- ZIO.fail(IllegalArgumentException("catalog id does not match snapshot")) unless snapshot.catalogId == catalogId
+          _ <- store.saveSnapshot(snapshot).mapError(error => IllegalArgumentException(error.message))
+        yield ApiResponse(201, snapshot.json.render())
+      case ("GET", "v1" :: "catalogs" :: catalogId :: "schemas" :: Nil) =>
+        metadata(metadataStore).flatMap(_.listSnapshots(catalogId)).mapError(e => readable(e)).map { values =>
+          val schemas = values.map(_.schema).distinct.sorted.map(schema => ujson.Obj("name" -> schema))
+          ok(ujson.Obj("items" -> ujson.Arr(schemas*)).render())
+        }
+      case ("GET", "v1" :: "catalogs" :: catalogId :: "tables" :: Nil) =>
+        metadata(metadataStore).flatMap(_.listTables(catalogId, request.query.get("schema"))).mapError(e => readable(e)).map(values => ok(ujson.Obj("items" -> ujson.Arr(values.map(_.json)*)) .render()))
+      case ("GET", "v1" :: "catalogs" :: catalogId :: "tables" :: name :: Nil) =>
+        for
+          store <- metadata(metadataStore)
+          schema <- ZIO.fromOption(request.query.get("schema")).orElseFail(IllegalArgumentException("schema query is required"))
+          value <- store.getTable(catalogId, schema, name).mapError(error => IllegalArgumentException(error.message))
+        yield value.map(table => ok(table.json.render())).getOrElse(ApiResponse(404, errorJson("table not found")))
+      case ("GET", "v1" :: "lineage" :: "graph" :: Nil) =>
+        for root <- ZIO.fromOption(request.query.get("root")).orElseFail(IllegalArgumentException("root query is required")); values <- metadata(metadataStore).flatMap(_.graph(root)).mapError(e => readable(e)) yield ok(ujson.Obj("items" -> ujson.Arr(values.map(_.json)*), "root" -> root).render())
+      case ("POST", "v1" :: "lineage" :: "sql" :: Nil) => submitStaticLineage(request, metadataStore)
       case ("POST", "v1" :: "deployments" :: Nil) =>
         applyDeployment(request, settings)
       case ("GET", "v1" :: "deployments" :: Nil) =>
@@ -190,6 +232,22 @@ object KubernetesHttpApi:
       case ("GET", "v1" :: "state" :: kind :: name :: Nil) =>
         getState(request, settings, kind, name)
       case _ => ZIO.succeed(ApiResponse(404, errorJson("route not found")))
+
+  private def metadata(store: Option[MetadataStore]): IO[Throwable, MetadataStore] = ZIO.fromOption(store).orElseFail(IllegalArgumentException("metadata store is not configured"))
+  private def readable(error: Throwable | ControlPlaneError): IllegalArgumentException = error match
+    case value: ControlPlaneError => IllegalArgumentException(value.message)
+    case value: Throwable => IllegalArgumentException(Option(value.getMessage).getOrElse(value.toString))
+
+  private def submitStaticLineage(request: ApiRequest, metadataStore: Option[MetadataStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+    for
+      store <- metadata(metadataStore)
+      body <- parseJson(request.body)
+      sql <- fieldName(body, "sql")
+      jobId = body.obj.get("jobId").flatMap(_.strOpt)
+      observedAt = body.obj.get("observedAt").flatMap(_.strOpt).getOrElse(java.time.Instant.now().toString)
+      edges <- ZIO.fromEither(SqlLineageParser.extract(sql, observedAt).left.map(IllegalArgumentException(_)))
+      _ <- ZIO.foreachDiscard(edges)(edge => store.saveLineage(edge.copy(jobId = jobId)).mapError(error => IllegalArgumentException(error.message)))
+    yield ApiResponse(201, ujson.Obj("items" -> ujson.Arr(edges.map(_.copy(jobId = jobId).json)*), "sourceType" -> "SQL_STATIC", "evidenceStatus" -> (if edges.isEmpty then "UNKNOWN" else "STATIC_INFERENCE")).render())
 
   private def applyDeployment(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for

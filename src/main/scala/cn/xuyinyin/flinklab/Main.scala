@@ -4,6 +4,7 @@ package cn.xuyinyin.flinklab
 import cn.xuyinyin.flinklab.application.PolicyEngine
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.operation.{AsyncOperationWorker, OperationStore, ResourceCoordinator}
+import cn.xuyinyin.flinklab.metadata.{MetadataStore, MetadataStoreLive}
 import cn.xuyinyin.flinklab.server.ServerProgram
 import cn.xuyinyin.flinklab.state.StateStore
 import zio.*
@@ -11,9 +12,10 @@ import zio.*
 object Main extends ZIOAppDefault:
   /** 组装 HTTP 服务依赖；命令行参数不再承载业务操作。 */
   override def run: ZIO[ZIOAppArgs & Scope, Any, Any] =
-    val serverLayer = ZLayer.make[KubernetesApi & StateStore & OperationStore & AsyncOperationWorker](
+    val serverLayer = ZLayer.make[KubernetesApi & StateStore & OperationStore & AsyncOperationWorker & MetadataStore](
       KubernetesApi.live,
       OperationStore.live,
+      MetadataStoreLive.layer,
       StateStore.live,
       PolicyEngine.live,
       ResourceCoordinator.live,

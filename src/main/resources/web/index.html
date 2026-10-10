@@ -22,6 +22,8 @@
         <a href="#overview" data-view="overview"><span class="nav-icon">⌂</span>总览</a>
         <a href="#jobs" data-view="jobs"><span class="nav-icon">▤</span>作业</a>
         <a href="#publish" data-view="publish"><span class="nav-icon">＋</span>发布</a>
+        <a href="#catalog" data-view="catalog"><span class="nav-icon">◇</span>目录</a>
+        <a href="#lineage" data-view="lineage"><span class="nav-icon">⌘</span>血缘</a>
         <a href="#operations" data-view="operations"><span class="nav-icon">↗</span>操作</a>
       </nav>
       <div class="rail-foot"><span>Flink Kubernetes Operator</span></div>
@@ -67,6 +69,16 @@
           <aside class="publish-aside"><div class="panel publish-settings"><div class="panel-heading"><div><span class="eyebrow">SUBMISSION</span><h2>提交参数</h2></div></div><div class="settings-body"><label for="publish-mode">操作类型</label><select id="publish-mode"><option value="deploy">创建作业</option><option value="upgrade">升级作业</option></select><label for="publish-request-id">请求 ID <span class="muted">requestId</span></label><div class="id-field"><input id="publish-request-id" placeholder="自动生成，也可手动填写" spellcheck="false"><button type="button" data-generate-id="publish-request-id">生成新 ID</button></div><p class="field-help">网络重试复用此 ID；新操作请生成新 ID。</p><div class="submit-actions"><button type="button" id="dry-run">预检查</button><button type="submit" class="primary" id="submit-publish">提交作业</button></div><div id="publish-message" class="message" role="status" aria-live="polite"></div></div></div><div class="panel publish-help"><div class="panel-heading"><h2>提交前检查</h2></div><ul><li>镜像和 jarURI 与集群版本匹配</li><li>ServiceAccount 具备 Flink 资源权限</li><li>有状态作业配置 RustFS 路径</li></ul></div></aside>
           <details id="dry-run-result" class="dry-run-result" hidden><summary>查看预检查返回值</summary><pre id="dry-run-json"></pre></details>
         </form>
+      </section>
+      <section id="catalog" class="view" hidden>
+        <div class="page-heading"><div><p class="eyebrow">CATALOG</p><h1>元数据目录</h1><p>查看已导入的 Catalog、Schema、表和字段。</p></div><div class="heading-meta"><span class="muted">来源：MANUAL Snapshot</span></div></div>
+        <div id="catalog-message" class="message" role="status" aria-live="polite">正在读取目录…</div>
+        <div class="catalog-layout"><div class="panel"><div class="panel-heading"><div><span class="eyebrow">CATALOGS</span><h2>Catalog</h2></div></div><div id="catalog-list" class="empty">暂无目录</div></div><div class="panel"><div class="panel-heading"><div><span class="eyebrow">TABLES</span><h2 id="catalog-title">选择 Catalog</h2></div></div><div id="catalog-tables" class="empty">选择 Catalog 查看表。</div></div></div>
+      </section>
+      <section id="lineage" class="view" hidden>
+        <div class="page-heading"><div><p class="eyebrow">LINEAGE</p><h1>数据血缘</h1><p>展示 SQL 静态推断结果，并明确标注证据来源。</p></div></div>
+        <form id="lineage-form" class="lookup-bar"><label for="lineage-root">根数据集</label><div class="inline"><input id="lineage-root" required placeholder="例如 analytics.summary"><button type="submit" class="primary">查询血缘</button></div></form>
+        <div id="lineage-message" class="message" role="status" aria-live="polite">输入根数据集查询。</div><div id="lineage-result" class="panel empty">暂无血缘</div>
       </section>
       <section id="operations" class="view" hidden>
         <div class="page-heading"><div><p class="eyebrow">OPERATIONS</p><h1>操作记录</h1><p>查看提交、调谐和验证的完整事件链。</p></div></div>

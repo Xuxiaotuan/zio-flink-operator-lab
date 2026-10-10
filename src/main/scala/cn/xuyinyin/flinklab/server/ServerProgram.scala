@@ -4,6 +4,7 @@ package cn.xuyinyin.flinklab.server
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import cn.xuyinyin.flinklab.state.{StatePoller, StateStore}
 import cn.xuyinyin.flinklab.operation.{AsyncOperationWorker, OperationStore}
+import cn.xuyinyin.flinklab.metadata.MetadataStore
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 import zio.*
 
@@ -23,18 +24,20 @@ object HttpServerSettings:
 
 object ServerProgram:
   /** 初始化数据库/状态后启动 HTTP Server 与后台状态轮询。 */
-  def run: ZIO[KubernetesApi & StateStore & AsyncOperationWorker & OperationStore, Throwable, Unit] =
+  def run: ZIO[KubernetesApi & StateStore & AsyncOperationWorker & OperationStore & MetadataStore, Throwable, Unit] =
     ZIO.scoped {
       for
         api <- ZIO.service[KubernetesApi]
         store <- ZIO.service[StateStore]
         worker <- ZIO.service[AsyncOperationWorker]
         operationStore <- ZIO.service[OperationStore]
+        metadataStore <- ZIO.service[MetadataStore]
         _ <- operationStore.initialize
+        _ <- metadataStore.initialize
         _ <- store.initialize
         _ <- StatePoller.run.forkScoped
         settings = HttpServerSettings.fromEnv(sys.env)
-        running <- ZIO.acquireRelease(start(settings, api, store, operationStore, worker)) { case (server, executor) =>
+        running <- ZIO.acquireRelease(start(settings, api, store, metadataStore, operationStore, worker)) { case (server, executor) =>
           ZIO.attempt(server.stop(0)).ignore *> ZIO.succeed(executor.shutdown())
         }
         _ <- Console.printLine(s"zio-flink-operator server listening on ${settings.host}:${settings.port}")
@@ -43,7 +46,7 @@ object ServerProgram:
     }
 
   /** 用资源作用域管理 HttpServer 和线程池，服务退出时一定关闭。 */
-  private def start(settings: HttpServerSettings, api: KubernetesApi, store: StateStore, operationStore: OperationStore, worker: AsyncOperationWorker): IO[Throwable, (HttpServer, ExecutorService)] =
+  private def start(settings: HttpServerSettings, api: KubernetesApi, store: StateStore, metadataStore: MetadataStore, operationStore: OperationStore, worker: AsyncOperationWorker): IO[Throwable, (HttpServer, ExecutorService)] =
     ZIO.attempt {
       val server = HttpServer.create(new InetSocketAddress(settings.host, settings.port), 0)
       val executor = Executors.newFixedThreadPool(settings.threads)
@@ -59,7 +62,7 @@ object ServerProgram:
             )
             val response = Unsafe.unsafe { implicit unsafe =>
               Runtime.default.unsafe.run(
-                KubernetesHttpApi.handleWith(api, store, operationStore, worker, request, KubernetesHttpSettings.fromEnv(sys.env))
+                KubernetesHttpApi.handleWith(api, store, metadataStore, operationStore, worker, request, KubernetesHttpSettings.fromEnv(sys.env))
               ).getOrThrowFiberFailure()
             }
             val bytes = response.body.getBytes(StandardCharsets.UTF_8)

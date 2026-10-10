@@ -148,3 +148,26 @@ test('selected job snapshots exclude other resources and session jobs', () => {
   const other = {name:'sp2',jobReferenceName:'orders',jobReferenceKind:'FlinkSessionJob'};
   assert.deepEqual(snapshotsForJob([own,other,{jobReferenceName:'another',jobReferenceKind:'FlinkDeployment'}], 'orders'), [own]);
 });
+const indexHtml = await readFile(new URL('../../main/resources/web/index.html', import.meta.url), 'utf8');
+test('catalog and lineage navigation exposes real API views', () => {
+  assert.match(indexHtml, /data-view="catalog"/);
+  assert.match(indexHtml, /data-view="lineage"/);
+  assert.match(source, /\/v1\/catalogs/);
+  assert.match(source, /\/v1\/lineage\/graph/);
+  assert.match(source, /SQL_STATIC/);
+  assert.match(source, /暂无目录|暂无血缘/);
+});
+test('catalog and lineage client encodes identifiers and submits static SQL', async () => {
+  const calls = [];
+  const client = createClient(async (url, options = {}) => { calls.push([url, options]); return reply(200, { items: [] }); });
+  await client.catalogs();
+  await client.tables('warehouse space', 'public');
+  await client.table('warehouse', 'public', 'order/table');
+  await client.lineage('raw/orders');
+  await client.submitStaticLineage('SELECT 1', 'job-1');
+  assert.equal(new URL(calls[1][0], 'http://local').pathname, '/v1/catalogs/warehouse%20space/tables');
+  assert.equal(new URL(calls[2][0], 'http://local').pathname, '/v1/catalogs/warehouse/tables/order%2Ftable');
+  assert.equal(new URL(calls[3][0], 'http://local').searchParams.get('root'), 'raw/orders');
+  assert.equal(new URL(calls[4][0], 'http://local').pathname, '/v1/lineage/sql');
+  assert.equal(JSON.parse(calls[4][1].body).jobId, 'job-1');
+});
