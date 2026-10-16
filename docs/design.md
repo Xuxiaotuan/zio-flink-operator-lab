@@ -52,9 +52,13 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 `FlinkOperationFactory` 把 HTTP 写请求转换成同一个 `FlinkOperation`。`PolicyEngine` 负责升级策略校验；`AsyncOperationWorker` 负责状态推进、Kubernetes 提交、观察和验证。`OperationStore` 默认使用 Kubernetes `FlinkOperation` CR，`ZIO_FLINK_OPERATION_STORE=postgres` 时才使用 PostgreSQL，`memory` 只用于单进程测试。Kubernetes 适配器仍是唯一提交边界。
 
+新资源用 POST 创建，名称已存在时由 API Server 明确拒绝；已有资源的变更使用带 UID/resourceVersion 的 merge patch，版本发生变化时返回冲突，禁止覆盖并发修改。merge patch 保留请求中未列出的字段，不使用强制字段接管。
+
 请求接受和操作完成是两个结果。HTTP 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。PolicyEngine 不通过时不会写 Kubernetes。验证会持续观察，只有 `Evidence` 同时满足资源身份、UID、提交后的 generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；确定失败进入 `Failed`，等待超时进入 `TimedOut`，提交请求结果不确定进入 `Uncertain`。
 
 严格 savepoint 策略的语义是：`StateProtection.Savepoint` 只有在 Evidence 明确包含 savepoint 保护和结果路径时才完成；Operator 的 `lastReconciledSpec` 缺失或显式表现为非 savepoint 时拒绝。`AllowLastState` 只允许明确观察到 `last-state` 的结果，并追加 `FALLBACK_DETECTED` 审计事件，不把未知证据当作 fallback。网络中断使用 `Uncertain`，被新操作覆盖使用 `Superseded`，超时使用 `TimedOut`。
+
+暂停还需区分 Flink Job 状态和 Operator 生命周期：savepoint 停止的 Job 可能为 `FINISHED`。只有 `lifecycleState=SUSPENDED` 且 `lastReconciledSpec.spec.job.state=suspended` 时才归一为暂停；严格暂停仍须通过 generation、reconciliation 和 savepoint 证据校验。
 
 ## 当前实现边界
 
@@ -116,6 +120,6 @@ PostgreSQL 只保存状态观测和资源版本，不保存 Flink checkpoint/sav
 
 Kubernetes 模式不会额外引入 ConfigMap 缓存，避免 CR 与缓存出现双重事实源。裸机或外部审计场景可以显式配置 PostgreSQL；裸机 PostgreSQL 模式的 upsert 使用 Kubernetes `resourceVersion` 防止较旧观测覆盖较新观测。
 
-当前已完成目标集群 PipelineRun #28、Flink Operator reconcile、两副本调度、Kubernetes CR 统一 operation 状态、RustFS checkpoint/savepoint、savepoint 恢复连续性、单副本故障演练、过期锁接管和 PostgreSQL 双节点运行的现场验收。HTTP dry-run、策略与最终 Flink 请求一致性、稳定 requestId、活动资源互斥、Operation CR resourceVersion 条件更新、worker 重启后的阶段恢复、快照 UID/结果路径校验、删除 UID 前置条件、watch 正常 EOF 重连、验证 Evidence、锁租约续期和 `FallbackDetected` 已有代码和回归测试；本轮还完成了控制面压力与长稳基线。单元测试、构建和 kustomize 渲染不能替代真实集群证据，控制面读请求指标也不能外推为 Flink 作业吞吐容量。
+目标集群的发布版本、操作 ID、RustFS 文件核对、恢复和锁接管结果统一记录在 [测试与证据](testing.md)，不以历史构建替代当前版本的验收。单元测试、构建和清单渲染不能替代真实集群证据，控制面读请求指标也不能外推为 Flink 作业吞吐容量。
 
 本地 OrbStack 只有一个节点，API 两个 Pod 和前端一个 Pod 只能证明进程副本与 Service 路由。目标集群清单使用前端 NodePort、API ClusterIP、API 两个副本和前端一个副本；两台机器的跨节点调度需要目标集群可达、节点标签正常、Operator 已安装，并通过滚动重启和状态接口验证。每个 API 副本都轮询同一 Kubernetes API，状态统一来自 CR；这会按 API 副本数增加 list 请求量，后续高规模场景应增加 leader election 或集中式 watch。

@@ -68,6 +68,8 @@ open http://<任一节点>:30882/
 
 两个 API 副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态和 operation 生命周期默认都来自 Kubernetes CR；每个副本都会轮询，因此状态轮询流量随 API 副本数线性增加。`FlinkOperationLock` CR 按目标资源提供跨副本互斥。设置 `ZIO_FLINK_OPERATION_STORE=postgres` 后，只有 operation 审计切换到 PostgreSQL，Flink 资源状态仍来自 Kubernetes。前端只通过 API Service 访问后端，不参与状态协调。
 
+2026-10-16 目标发布为 Pipeline `#47`、代码 `9804df5`，API/UI 标签均为 `build-47-9804df52f67f`；实际操作和清理结果见 [最新真实验收](testing.md#最新真实验收2026-10-16)。当前单副本前端采用先停后启的滚动策略，发布期间会短暂不可用；客户端恢复连接后继续查询原 operationId。
+
 Flink 冷启动和 TaskManager 调度可能超过短轮询窗口，worker 的提交、删除和验证超时由 `ZIO_FLINK_VERIFICATION_TIMEOUT_SECONDS` 控制，默认 180 秒；现场集群可以按镜像拉取和调度时延调整。
 
 ## 执行边界与健康检查
@@ -89,6 +91,8 @@ s3://flink-savepoints/zio-flink-operator/
 ```
 
 目标集群已有 `rustfs` Service（9000）和 `rustfs-credentials` Secret。真实快照验收使用 [examples/flinkdeployment-stateful.json](../examples/flinkdeployment-stateful.json)：它对应 Pipeline 构建的 `zio-flink-stateful-job` 镜像，镜像激活官方 Flink S3 文件系统插件，并通过 `kubernetes.env.secretKeyRef` 将 Secret 注入 Flink Pod；Registry 私有镜像通过 `podTemplate.spec.imagePullSecrets` 使用目标集群已有的 `xxt-harbor-pull`。Flink 1.20 的 S3 插件、endpoint、path-style 和凭据配置遵循 [官方 S3 文件系统文档](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/deployment/filesystems/s3/)。
+
+该集群的服务域名需使用绝对 DNS：示例 S3 endpoint 为 `http://rustfs.bigdata-lab.svc.cluster.local.:9000`，末尾的点用于避免搜索域将请求解析到 FakeDNS。
 
 本地默认前缀：
 
@@ -163,7 +167,7 @@ sbt run
 
 目标集群需要单独验证 Operator reconcile、checkpoint、savepoint、恢复、跨节点调度和两个副本读取同一状态。本地部署结果不能替代这些证据。
 
-本轮已在目标集群安装官方 Flink Kubernetes Operator `1.16.1`，命令等价于：
+目标集群使用官方 Flink Kubernetes Operator `1.16.1`。首次安装命令为：
 
 ```sh
 helm upgrade --install flink-kubernetes-operator \

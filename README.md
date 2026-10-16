@@ -87,7 +87,7 @@ curl -fsS "http://127.0.0.1:8080/v1/snapshots/orders-savepoint?namespace=$FLINK_
 
 ## 性能评估
 
-当前服务适合低到中等频率的 Flink 控制作业。目标集群的控制面基线为：60 秒、16 并发、9507 次请求全部成功；`/healthz` P95 约 159 ms，`/v1/state` P95 约 512.2 ms。10 分钟双节点稳定性测试完成 468 次请求、0 错误、P95 约 66.4 ms，期间无 Pod 重启。
+当前服务适合低到中等频率的 Flink 控制作业。2026-10-08 的控制面读请求历史基线为：60 秒、16 并发、9507 次请求全部成功；`/healthz` P95 约 159 ms，`/v1/state` P95 约 512.2 ms。10 分钟双节点稳定性测试完成 468 次请求、0 错误、P95 约 66.4 ms，期间无 Pod 重启。
 
 这些指标包含网络和 Kubernetes API 延迟，只代表控制面读请求基线，不代表 Flink 作业吞吐容量。每个副本按固定间隔读取三类 CR，轮询请求量随副本数线性增加。
 
@@ -111,6 +111,8 @@ Kubernetes 部署默认使用 API Server 中的 Flink CR 作为多副本共享�
 项目使用 Scala 3.3.5、ZIO 2.1.11、ZIO Streams 2.1.11、Kubernetes Java Client 20.0.1，建议 JDK 17。
 
 当前服务读取 Operator CR 的状态摘要。逐个 checkpoint 的 task/subtask 明细需要 Flink REST，当前不属于 Kubernetes API 适配器。目标集群的 Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、Savepoint 恢复连续性、控制面 Pod 故障演练、FlinkOperationLock 租约接管和 PostgreSQL 双节点运行已有真实验收记录；压力和长稳指标覆盖控制面接口，不代表生产容量。
+
+2026-10-16 已通过 KubeSphere Pipeline #47 部署（代码 `9804df5`），并完成真实 checkpoint/savepoint、严格升级与暂停恢复、过期锁接管和控制面 Pod 故障验收；本轮测试资源及 RustFS 测试前缀已清理。操作 ID、失败修复和证据边界见 [最新真实验收](docs/testing.md#最新真实验收2026-10-16)。
 
 SQL 静态血缘使用 Flink 1.20.1 SQL Parser 的语法树提取表关系；语法解析不包含 Catalog/类型校验或执行计划生成。Catalog、Schema Snapshot 和 SQL 静态血缘见 [Catalog 与血缘](docs/metadata-lineage.md)。构建、Kubernetes/RustFS 配置和多副本部署见 [部署](docs/deployment.md)；验证记录见 [测试与证据](docs/testing.md)。
 
