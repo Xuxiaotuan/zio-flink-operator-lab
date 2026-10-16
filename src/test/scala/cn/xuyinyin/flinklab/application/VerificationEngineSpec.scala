@@ -26,6 +26,28 @@ object VerificationEngineSpec extends ZIOSpecDefault:
       assertTrue(DefaultVerificationEngine.verify(operation, ref, missing).isLeft, DefaultVerificationEngine.verify(operation, ref, protectedEvidence).isRight,
         DefaultVerificationEngine.verify(operation, ref, protectedEvidence.copy(reconciliation = ReconciliationState.Error)).isLeft)
     },
+    test("accepts Operator SUSPENDED lifecycle with a finished savepoint-stopped job") {
+      val operation = FlinkOperation.Suspend(ref, SuspendPolicy.KeepState)
+      val payload = ujson.Obj("kind" -> "FlinkDeployment", "metadata" -> ujson.Obj("name" -> "orders"), "status" -> ujson.Obj(
+        "lifecycleState" -> "SUSPENDED",
+        "jobStatus" -> ujson.Obj("state" -> "FINISHED", "savepointInfo" -> ujson.Obj(), "upgradeSavepointPath" -> "s3://snapshots/stop"),
+        "reconciliationStatus" -> ujson.Obj("state" -> "DEPLOYED", "lastReconciledSpec" -> ujson.Obj("spec" -> ujson.Obj("job" -> ujson.Obj("state" -> "suspended", "upgradeMode" -> "savepoint"))).render())))
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), payload.render())
+      val evidence = Evidence.fromObservation(namespace, observation)
+      val expected = Generation.from(3).toOption
+      val withoutLifecycle = Evidence.fromObservation(namespace, observation.copy(payload = payload.render().replace("SUSPENDED", "STABLE")))
+      val withoutIntent = Evidence.fromObservation(namespace, observation.copy(payload = payload.render().replace("suspended", "running")))
+      val stillRunning = Evidence.fromObservation(namespace, observation.copy(payload = payload.render().replace("FINISHED", "RUNNING")))
+      assertTrue(
+        evidence.jobState == JobState.Suspended,
+        DefaultVerificationEngine.verify(operation, ref, evidence, expected).isRight,
+        DefaultVerificationEngine.verify(operation, ref, withoutLifecycle, expected).isLeft,
+        DefaultVerificationEngine.verify(operation, ref, withoutIntent, expected).isLeft,
+        DefaultVerificationEngine.verify(operation, ref, stillRunning, expected).isLeft,
+        DefaultVerificationEngine.verify(operation, ref, evidence.copy(actualProtection = None), expected).isLeft,
+        DefaultVerificationEngine.verify(operation, ref, evidence.copy(observedGeneration = Generation.from(2).toOption), expected).isLeft
+      )
+    },
     test("requires deletion-specific evidence instead of generic ready evidence") {
       val operation = FlinkOperation.Delete(ref, DeletePolicy.Graceful)
       val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")

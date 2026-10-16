@@ -45,7 +45,7 @@ object Evidence:
       case _ =>
         val status = FlinkStatusSnapshot.fromJsonString(observation.payload).toOption
         val configuration = scala.util.Try(ujson.read(observation.payload)).toOption.flatMap(_.obj.get("spec").flatMap(_.objOpt)).flatMap(_.get("flinkConfiguration")).flatMap(_.objOpt).flatMap(_.get("state.savepoints.dir")).flatMap(_.strOpt).flatMap(SnapshotPath.from(_).toOption)
-        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState)), None, savepointPath(status), Instant.now(), observation.payload, configuration, actualProtection = actualProtection(observation.payload, status))
+        Evidence(resource, rv, resource.uid, generation, observedGeneration, reconciliation(status.flatMap(_.reconciliationState), status.flatMap(_.error)), jobState(status.flatMap(_.jobState), status.flatMap(_.lifecycleState), observation.payload), None, savepointPath(status), Instant.now(), observation.payload, configuration, actualProtection = actualProtection(observation.payload, status))
 
   private def reconciliation(value: Option[String], error: Option[String]): ReconciliationState =
     if error.exists(_.trim.nonEmpty) then ReconciliationState.Error
@@ -55,23 +55,28 @@ object Evidence:
       case Some("ERROR") | Some("FAILED") => ReconciliationState.Error
       case _ => ReconciliationState.Unknown
 
-  private def jobState(value: Option[String]): JobState = value.map(_.toUpperCase) match
+  private def jobState(value: Option[String], lifecycle: Option[String], raw: String): JobState = value.map(_.toUpperCase) match
+    // Operator 的 savepoint 暂停会把 Job 标为 FINISHED；必须同时有生命周期和已协调声明，避免误认自然结束。
+    case Some("FINISHED") if lifecycle.exists(_.equalsIgnoreCase("SUSPENDED")) &&
+      reconciledJob(raw).flatMap(_.obj.get("state")).flatMap(_.strOpt).exists(_.equalsIgnoreCase("suspended")) => JobState.Suspended
     case Some("RUNNING") => JobState.Running
     case Some("SUSPENDED") => JobState.Suspended
     case Some("FINISHED") => JobState.Finished
     case Some("FAILED") => JobState.Failed
     case _ => JobState.Unknown
 
-  private def actualProtection(raw: String, status: Option[FlinkStatusSnapshot]): Option[ActualProtection] =
-    val mode = for
+  private def reconciledJob(raw: String): Option[ujson.Value] =
+    for
       parsed <- scala.util.Try(ujson.read(raw)).toOption
       statusObject <- parsed.obj.get("status").flatMap(_.objOpt)
       reconciliation <- statusObject.get("reconciliationStatus").flatMap(_.objOpt)
       reconciled <- reconciliation.get("lastReconciledSpec").flatMap(_.strOpt)
       spec <- scala.util.Try(ujson.read(reconciled)).toOption.flatMap(_.obj.get("spec").flatMap(_.objOpt))
-      job <- spec.get("job").flatMap(_.objOpt)
-      upgradeMode <- job.get("upgradeMode").flatMap(_.strOpt)
-    yield upgradeMode.trim.toLowerCase
+      job <- spec.get("job").filter(_.objOpt.nonEmpty)
+    yield job
+
+  private def actualProtection(raw: String, status: Option[FlinkStatusSnapshot]): Option[ActualProtection] =
+    val mode = reconciledJob(raw).flatMap(_.obj.get("upgradeMode")).flatMap(_.strOpt).map(_.trim.toLowerCase)
     mode.flatMap {
       case "last-state" | "laststate" => Some(ActualProtection.LastState)
       case "savepoint" => savepointPath(status).map(ActualProtection.Savepoint.apply)
