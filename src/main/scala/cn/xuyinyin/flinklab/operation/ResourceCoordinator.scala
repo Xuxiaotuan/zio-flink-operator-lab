@@ -26,7 +26,8 @@ final class KubernetesResourceCoordinator(api: KubernetesApi) extends ResourceCo
     acquire(resource, operationId, lockName).flatMap { lock =>
       for
         current <- Ref.make(lock)
-        // renew 与 effect 竞速；续租失败会中断副作用，避免失去所有权后继续操作。
+        // 续租失败先中断副作用，再释放锁；KubernetesApi 将中断传到 Call.cancel。
+        // 取消仅终止本地传输，已到服务端的写入仍可能完成，安全性还依赖 UID/RV 和不重放。
         result <- renew(resource.namespace, lockName, current).forever.raceFirst(effect).ensuring(release(resource.namespace, lockName, lock.uid))
       yield result
     }

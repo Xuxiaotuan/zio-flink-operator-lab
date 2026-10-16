@@ -10,7 +10,7 @@ import zio.test.*
 /** 必须指向独立测试库；表名随机化，Scope 退出时只删除本测试的表和连接池。 */
 object PostgresRuntimeContractSpec extends ZIOSpecDefault:
   def spec = suite("real PostgreSQL runtime contracts")(
-    test("two stores share transitions and active scans exclude terminal history") {
+    test("two stores preserve intent, share transitions and reject corrupt active history") {
       ZIO.scoped {
         val env = sys.env
         val jdbc = env("ZIO_FLINK_METADATA_TEST_JDBC_URL")
@@ -19,7 +19,7 @@ object PostgresRuntimeContractSpec extends ZIOSpecDefault:
         val table = "zio_contract_" + java.util.UUID.randomUUID().toString.replace("-", "")
         val settings = OperationStoreSettings(jdbc, user, password, table)
         val resource = ResourceRef(Namespace.unsafe("analytics"), ResourceKind.Deployment, DeploymentName.unsafe("orders"))
-        val operation = Operation.accepted(RequestId.generate(), FlinkOperation.Resume(resource), resource, java.time.Instant.now())
+        val operation = Operation.accepted(RequestId.generate(), FlinkOperation.Suspend(resource, SuspendPolicy.DiscardState), resource, java.time.Instant.now())
         for
           cleanup <- ZIO.acquireRelease(ZIO.attempt(new JdbcPool(jdbc, user, password)))(p => ZIO.attemptBlocking {
             p.withConnection { c =>
@@ -46,7 +46,22 @@ object PostgresRuntimeContractSpec extends ZIOSpecDefault:
               finally rows.close()
             finally statement.close()
           })
-        yield assertTrue(active.map(_.id) == List(operation.id), terminal.exists(_.state == OperationState.Failed), stillActive.isEmpty, limits == "10s", !MetadataStoreSettings(jdbc, user, password).toString.contains(password))
+          // 直接损坏测试表，确认 get、活动扫描和状态推进均拒绝恢复，而不是绕过 codec。
+          _ <- ZIO.attemptBlocking(cleanup.withConnection { c =>
+            val value = ujson.read(OperationCodec.json(operation))
+            value("events")(0)("type") = "FUTURE_EVENT"
+            val statement = c.prepareStatement(s"UPDATE $table SET operation_json = ? WHERE operation_id = ?")
+            try
+              statement.setString(1, value.render())
+              statement.setString(2, operation.id.operationIdValue)
+              statement.executeUpdate()
+            finally statement.close()
+          })
+          corrupt <- second.get(operation.id).either
+          corruptScan <- first.listActive.either
+          corruptTransition <- first.transition(operation.id, OperationEvent.ValidationStarted(java.time.Instant.now())).either
+        yield assertTrue(active.map(_.id) == List(operation.id), terminal.exists(value => value.state == OperationState.Failed && value.command == operation.command), stillActive.isEmpty, limits == "10s",
+          List(corrupt, corruptScan, corruptTransition).forall(_.left.exists(_.isInstanceOf[ControlPlaneError.StoreFailure])), !MetadataStoreSettings(jdbc, user, password).toString.contains(password))
       }
     } @@ TestAspect.ifEnv("ZIO_FLINK_METADATA_TEST_JDBC_URL")(_.nonEmpty)
   )

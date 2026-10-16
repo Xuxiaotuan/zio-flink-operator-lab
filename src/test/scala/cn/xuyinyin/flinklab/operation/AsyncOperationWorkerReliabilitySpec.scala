@@ -214,6 +214,27 @@ object AsyncOperationWorkerReliabilitySpec extends ZIOSpecDefault:
         yield assertTrue(result.flatten.exists(_.state == OperationState.Failed))
       }
     },
+    test("recovered resume never completes from a finished job or resubmits the mutation") {
+      for
+        store <- InMemoryOperationStore.make
+        mutex <- OperationMutex.make
+        writes <- Ref.make(0)
+        observed <- Promise.make[Nothing, Unit]
+        accepted <- accept(store, FlinkOperation.Resume(target), "resume-finished-recovery")
+        _ <- submitted(store, accepted.operationId)
+        finished = ready.replace("RUNNING", "FINISHED")
+        finishedObserver = new ResourceObserver:
+          def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
+            observer(finished).observe(namespace, kind, name) ++ ZStream.fromZIO(observed.succeed(())).drain ++ ZStream.never
+        worker = new DefaultAsyncOperationWorker(api(ZIO.succeed(finished), patchRecord = _ => writes.update(_ + 1)), finishedObserver, DefaultVerificationEngine, store, mutex)
+        fiber <- worker.process(accepted.operationId).either.fork
+        _ <- observed.await
+        _ <- TestClock.adjust(181.seconds)
+        result <- fiber.join
+        stored <- store.get(accepted.operationId)
+        count <- writes.get
+      yield assertTrue(result.isLeft, stored.exists(_.state == OperationState.TimedOut), count == 0)
+    },
     test("GET requests that never return terminalize within the verification deadline") {
       for
         store <- InMemoryOperationStore.make

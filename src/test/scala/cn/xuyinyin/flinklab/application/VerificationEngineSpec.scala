@@ -58,6 +58,16 @@ object VerificationEngineSpec extends ZIOSpecDefault:
       val observation = ResourceObservation(WatchEventType.Added, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")
       assertTrue(DefaultVerificationEngine.verify(operation, ref, Evidence.fromObservation(namespace, observation)).isRight)
     },
+    test("resume requires RUNNING and READY rather than an old FINISHED observation") {
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders"},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"FINISHED"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")
+      val evidence = Evidence.fromObservation(namespace, observation)
+      val operation = FlinkOperation.Resume(ref)
+      assertTrue(
+        DefaultVerificationEngine.verify(operation, ref, evidence, Generation.from(3).toOption).isLeft,
+        DefaultVerificationEngine.verify(operation, ref, evidence.copy(jobState = JobState.Running), Generation.from(3).toOption).isRight,
+        DefaultVerificationEngine.verify(operation, ref, evidence.copy(jobState = JobState.Running, reconciliation = ReconciliationState.Reconciling)).isLeft
+      )
+    },
     test("accepts a naturally finished ready job") {
       val operation = FlinkOperation.Deploy(FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1)))
       val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"FINISHED"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")

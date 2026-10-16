@@ -211,7 +211,7 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
       body: Option[String] = None,
       contentType: String = "application/json"
   ): IO[Throwable, String] =
-    val effect = ZIO.attemptBlocking {
+    val effect = ZIO.attempt {
       val queryParams = new java.util.ArrayList[Pair]()
       query.foreach { case (key, value) => queryParams.add(new Pair(key, value)) }
       val headers = new java.util.HashMap[String, String]()
@@ -234,13 +234,18 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
         case Some(value) =>
           requestWithoutBody.newBuilder().method(method, RequestBody.create(value, MediaType.parse(contentType))).build()
         case None => requestWithoutBody
-      val response = requestClient.newCall(request).execute()
-      try
-        val responseBody = Option(response.body()).map(_.string()).getOrElse("")
-        // 非 2xx 统一转成 KubernetesApiError，下面的 retry 只按状态码分类。
-        if response.isSuccessful then responseBody
-        else throw KubernetesApiError(response.code(), responseBody)
-      finally response.close()
+      requestClient.newCall(request)
+    }.flatMap { call =>
+      // 每次尝试独立创建 Call；租约丢失、请求超时或服务关闭都要传递到实际 socket。
+      ZIO.attemptBlockingCancelable {
+        val response = call.execute()
+        try
+          val responseBody = Option(response.body()).map(_.string()).getOrElse("")
+          // 读取响应体也可能阻塞；正常、异常、取消路径都由 finally 关闭响应。
+          if response.isSuccessful then responseBody
+          else throw KubernetesApiError(response.code(), responseBody)
+        finally response.close()
+      }(ZIO.succeed(call.cancel()))
     }
     // 只有读取和 dry-run 能安全重放未知结果；真实变更仅重试明确拒绝执行的 429。
     val safeToReplay = method == "GET" || method == "HEAD" || query.get("dryRun").contains("All")

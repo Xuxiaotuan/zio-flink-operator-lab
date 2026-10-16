@@ -11,9 +11,31 @@ sbt -batch assembly
 mvn -B -f job/pom.xml package -DskipTests
 ```
 
-### 2026-10-16 修复验证
+### 第一阶段可靠性修复（2026-10-16）
 
-- 当前代码 `9804df5` 的 `sbt -batch test assembly`：175 个测试通过，6 个按开关跳过，assembly 成功。跳过项是 4 个外部 HTTP E2E 和 2 个独立 PostgreSQL 契约用例；部署后的流水线另行开启并通过全部 4 个外部 HTTP E2E。
+- `sbt -batch test assembly`：193 个测试通过、0 失败、6 个按开关跳过，assembly 成功。相对上一发布新增 18 个回归用例。
+- `OperationCodecSpec` 覆盖策略完整往返、版本/旧格式兼容、未知枚举与事件、损坏 Evidence、事件重放与 state/时间一致性、整数边界和恢复参数。Kubernetes store 回归确认坏记录返回 `StoreFailure`，状态推进不会写回。
+- `VerificationEngineSpec` 和 worker 恢复测试确认 Resume 的 `FINISHED` 不能完成，必须满足 `RUNNING + READY`；恢复时只观察，不再提交变更。Deploy 自然结束的既有用例继续通过。
+- `KubernetesApiCancellationSpec` 使用真实 TCP/OkHttp，验证等待响应头、读取响应体时的中断会取消 Call 并释放连接；真实等待默认 40 秒续租周期后，以 HTTP 409 模拟失去锁，确认先取消变更请求再释放锁、没有第二次变更。它证明传输层取消顺序，不证明 API Server 撤销已接收的请求。
+- 另建仅映射回环地址的临时 PostgreSQL，开启 `PostgresRuntimeContractSpec` 和 `PostgresMetadataStoreSpec`：2/2 通过。两个 store 共享非默认暂停策略与状态，损坏活动历史的 get/listActive/transition 均拒绝恢复。测试表和临时容器已删除。
+- 使用本轮 assembly 重跑 `packaged-http-contract.py`：两个真实 JAR HTTP 进程共享 Catalog/Schema/血缘和 requestId；依赖中断时 `/readyz` 约 3.02 秒返回 503，`/healthz` 仍为 200。两个进程及临时 PostgreSQL 已清理，复查无测试容器残留。
+
+本阶段没有部署到 bigdata-lab，也没有重跑真实 Flink/Operator/RustFS 验收；该版本的目标集群证据为 `evidence_incomplete`。下面 Pipeline #47 的现场结果属于上一发布，不能充当本轮修复的现场证明。ExecutionPlan、状态机扩展、CRD/status 迁移及 HTTP 框架更换不在本阶段范围。
+
+复现聚焦测试：
+
+```sh
+sbt -batch 'testOnly *OperationCodecSpec *VerificationEngineSpec *AsyncOperationWorkerReliabilitySpec *KubernetesOperationStoreSpec *KubernetesApiCancellationSpec'
+# 仅指向独立测试库；测试表名随机化，退出时清理。
+ZIO_FLINK_METADATA_TEST_JDBC_URL=jdbc:postgresql://127.0.0.1:5432/zio_test \
+ZIO_FLINK_METADATA_TEST_USER=postgres \
+ZIO_FLINK_METADATA_TEST_PASSWORD=test-only \
+sbt -batch 'testOnly *PostgresRuntimeContractSpec *PostgresMetadataStoreSpec'
+```
+
+### 上一发布修复验证（代码 `9804df5`）
+
+- 上一发布代码 `9804df5` 的 `sbt -batch test assembly`：175 个测试通过，6 个按开关跳过，assembly 成功。跳过项是 4 个外部 HTTP E2E 和 2 个独立 PostgreSQL 契约用例；部署后的流水线另行开启并通过全部 4 个外部 HTTP E2E。
 - 修复覆盖 POST 创建与 UID/resourceVersion 约束的 merge patch 更新、写入响应丢失后不自动重放、严格 Restart/Suspend 保护证据、Operator `SUSPENDED/FINISHED` 暂停组合、UID/resourceVersion 绑定、删除及快照恢复、幂等创建竞争、缺失资源、有界并发、活动操作查询、HTTP 错误分类和 readiness 响应时限。
 - Flink 1.20.1 语法树解析回归覆盖别名逗号连接、子查询、CTE、CTAS、残缺 SQL 及不支持节点；assembly 中两个 JSON_QUERY 补丁类已核对采用 Flink 的实现。
 - 前端镜像构建通过，其中执行的 Node 测试为 19/19。

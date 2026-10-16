@@ -60,6 +60,18 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 暂停还需区分 Flink Job 状态和 Operator 生命周期：savepoint 停止的 Job 可能为 `FINISHED`。只有 `lifecycleState=SUSPENDED` 且 `lastReconciledSpec.spec.job.state=suspended` 时才归一为暂停；严格暂停仍须通过 generation、reconciliation 和 savepoint 证据校验。
 
+## 操作持久化与恢复约束
+
+`OperationCodec` 是 Kubernetes CR 与 PostgreSQL 共用的持久化边界。新写入记录携带 `schemaVersion: 1`，显式保存 Suspend/Delete 策略、升级保护与 fallback、恢复参数和提交身份。未知版本、未知事件或策略、损坏的 Evidence、非整数 generation/nonce 都拒绝读取，并由 store 返回 `StoreFailure`。程序不会把坏数据改写成成功或自动生成 `Uncertain` 事件。
+
+读取时从 `Accepted` 重放完整历史，使用同一个 `OperationStateMachine` 校验每次转换，再核对持久化 state、createdAt 与 updatedAt。事件时间不要求跨节点单调递增；createdAt 必须对应首个 Accepted，updatedAt 必须对应末事件。缺失的历史证据仍保持缺失，不能被补成成功依据。
+
+无版本记录只兼容已知旧编码：缺失 Suspend 策略解释为 `KeepState`，缺失 Delete 策略解释为 `Graceful`；旧 Submitted/Observed 的 generation `0` 和空 resourceVersion 表示未返回身份。旧编码已经丢掉的 `DiscardState` / `Force` 无法从 JSON 反推。需要这些语义的历史操作应按原请求和外部证据核对，不能宣称可无损恢复。新版本缺失策略或任何版本显式写入未知策略都拒绝读取。
+
+Resume 必须观察到对应 UID、提交 generation/observedGeneration 的 `RUNNING + READY`。旧作业 `FINISHED` 不算恢复成功；若有界作业在观察到 RUNNING 前已经结束，当前会继续观察并超时，不用 FINISHED 猜测本次恢复结果。Deploy 对自然结束的 `FINISHED + READY` 仍维持原有判据。
+
+Kubernetes 普通 HTTP 请求将 ZIO 中断传给对应 OkHttp `Call.cancel()`，响应体读取在 `finally` 中关闭。续租失败会先发出本地取消再释放锁；取消无法撤销已经到达 API Server 的写入，因此仍依赖 UID/resourceVersion 前置条件、确定名称创建和未知写入结果不重放。持久化 `ValidationPassed` 后没有提交回执时，恢复仍进入 `Uncertain`，不会重复提交。
+
 ## 当前实现边界
 
 1. HTTP 写请求统一生成 `FlinkOperation`，服务返回 `operationId`。

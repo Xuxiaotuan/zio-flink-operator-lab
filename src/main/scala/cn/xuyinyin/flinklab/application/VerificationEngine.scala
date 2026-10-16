@@ -122,6 +122,11 @@ object DefaultVerificationEngine extends VerificationEngine:
             result <- if evidence.jobState == JobState.Suspended && evidence.reconciliation == ReconciliationState.Ready then Right(VerificationResult(evidence, "job is suspended and reconciled"))
               else Left(ControlPlaneError.VerificationFailed(s"expected SUSPENDED with READY reconciliation, observed ${evidence.jobState}/${evidence.reconciliation}"))
           yield result
+        case FlinkOperation.Resume(_) =>
+          // FINISHED 可能是暂停前的旧作业，不能证明本次恢复已经运行；宁可继续观察或超时。
+          if evidence.jobState == JobState.Running && evidence.reconciliation == ReconciliationState.Ready then
+            Right(VerificationResult(evidence, "resumed job is running and reconciled"))
+          else Left(ControlPlaneError.VerificationFailed(s"resume requires RUNNING with READY reconciliation, observed ${evidence.jobState}/${evidence.reconciliation}"))
         case FlinkOperation.Snapshot(_, _) =>
           if evidence.snapshotState.exists(_.equalsIgnoreCase("COMPLETED")) && evidence.snapshotPath.nonEmpty then Right(VerificationResult(evidence, "snapshot completed"))
           else

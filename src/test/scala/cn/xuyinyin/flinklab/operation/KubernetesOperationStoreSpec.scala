@@ -36,7 +36,8 @@ object KubernetesOperationStoreSpec extends ZIOSpecDefault:
     },
     test("lists indexed active operations and unlabeled legacy operations without listing history") {
       val legacy = Operation.accepted(RequestId.from("legacy-request").toOption.get, FlinkOperation.Resume(target), target, Instant.now())
-      val terminal = legacy.copy(id = OperationId.generate(), state = OperationState.Completed)
+      // 终态也必须有合法历史，不能直接修改 state 伪造完成。
+      val terminal = legacy.advance(OperationEvent.Failed(Instant.now(), "historical terminal")).toOption.get.copy(id = OperationId.generate())
       def response(values: Operation*) = ujson.Obj("items" -> ujson.Arr.from(values.map(value => ujson.read(KubernetesOperationResource.render(value))))).render()
       for
         selectors <- Ref.make(List.empty[Option[String]])
@@ -87,6 +88,24 @@ object KubernetesOperationStoreSpec extends ZIOSpecDefault:
       val second = ujson.read(KubernetesOperationResource.render(value))("metadata")("labels")("xxt.io/request-id").str
       assertTrue(first.length <= 63, first.matches("[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?"), first == second,
         KubernetesOperationResource.parse(KubernetesOperationResource.render(value)).contains(value))
+    },
+    test("rejects corrupt persisted history before any transition write") {
+      val value = ujson.read(KubernetesOperationResource.render(operation))
+      value("spec")("operation")("state") = "COMPLETED"
+      for
+        writes <- Ref.make(0)
+        api = new KubernetesApi:
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = writes.update(_ + 1).as(resource)
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed(value.render())
+          override def list(namespace: Namespace, kind: ResourceKind) = ZIO.succeed(ujson.Obj("items" -> ujson.Arr(value)).render())
+          def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.fail(UnsupportedOperationException())
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = writes.update(_ + 1).as(patch)
+        store = new KubernetesOperationStore(api)
+        loaded <- store.get(operation.id).either
+        listed <- store.list.either
+        advanced <- store.transition(operation.id, OperationEvent.ValidationStarted(Instant.now())).either
+        count <- writes.get
+      yield assertTrue(List(loaded, listed, advanced).forall(_.left.exists(_.isInstanceOf[ControlPlaneError.StoreFailure])), count == 0)
     },
     test("round trips operation lifecycle through a Kubernetes CR") {
       for
