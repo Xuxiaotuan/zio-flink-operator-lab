@@ -111,23 +111,32 @@ object DefaultVerificationEngine extends VerificationEngine:
       Left(ControlPlaneError.VerificationFailed("observedGeneration does not match generation"))
     else
       operation match
-        case FlinkOperation.Suspend(_, _) =>
-          if evidence.jobState == JobState.Suspended then Right(VerificationResult(evidence, "job is suspended"))
-          else Left(ControlPlaneError.VerificationFailed(s"expected SUSPENDED, observed ${evidence.jobState}"))
+        case FlinkOperation.Suspend(_, policy) =>
+          for
+            _ <- if policy == SuspendPolicy.KeepState then protection(UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden), evidence) else Right(())
+            result <- if evidence.jobState == JobState.Suspended && evidence.reconciliation == ReconciliationState.Ready then Right(VerificationResult(evidence, "job is suspended and reconciled"))
+              else Left(ControlPlaneError.VerificationFailed(s"expected SUSPENDED with READY reconciliation, observed ${evidence.jobState}/${evidence.reconciliation}"))
+          yield result
         case FlinkOperation.Snapshot(_, _) =>
           if evidence.snapshotState.exists(_.equalsIgnoreCase("COMPLETED")) && evidence.snapshotPath.nonEmpty then Right(VerificationResult(evidence, "snapshot completed"))
           else
             val reason = evidence.snapshotError.orElse(evidence.snapshotFailures).getOrElse("snapshot has not completed with a result path")
             Left(ControlPlaneError.VerificationFailed(reason))
         case FlinkOperation.Upgrade(_, _, policy) =>
-          evidence.actualProtection match
-            case None => Left(ControlPlaneError.VerificationFailed("state protection evidence is unavailable"))
-            case Some(actual) if matches(policy.protection, actual) => ready(evidence, s"job is ${evidence.jobState} and reconciled")
-            case Some(ActualProtection.LastState) if policy.fallback == FallbackPolicy.AllowLastState => ready(evidence, "last-state fallback accepted")
-            case Some(actual) => Left(ControlPlaneError.VerificationFailed(s"requested ${policy.protection} but observed ${actual}"))
-        case FlinkOperation.Delete(_, _) => Right(VerificationResult(evidence, "delete acknowledged"))
+          protection(policy, evidence).flatMap(_ => ready(evidence, s"job is ${evidence.jobState} and reconciled"))
+        case FlinkOperation.Restart(_, policy) =>
+          protection(policy, evidence).flatMap(_ => ready(evidence, s"job is ${evidence.jobState} and reconciled"))
+        case FlinkOperation.Delete(_, _) =>
+          Left(ControlPlaneError.VerificationFailed("delete requires confirmation that the target resource is absent"))
         case _ =>
           ready(evidence, s"job is ${evidence.jobState} and reconciled")
+
+  private def protection(policy: UpgradePolicy, evidence: Evidence): Either[ControlPlaneError, Unit] =
+    evidence.actualProtection match
+      case None => Left(ControlPlaneError.VerificationFailed("state protection evidence is unavailable"))
+      case Some(actual) if matches(policy.protection, actual) => Right(())
+      case Some(ActualProtection.LastState) if policy.protection == StateProtection.Savepoint && policy.fallback == FallbackPolicy.AllowLastState => Right(())
+      case Some(actual) => Left(ControlPlaneError.VerificationFailed(s"requested ${policy.protection} but observed ${actual}"))
 
   private def matches(requested: StateProtection, actual: ActualProtection): Boolean =
     (requested, actual) match

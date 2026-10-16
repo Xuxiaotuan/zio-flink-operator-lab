@@ -35,9 +35,13 @@ object ServerProgram:
         _ <- operationStore.initialize
         _ <- metadataStore.initialize
         _ <- store.initialize
-        _ <- StatePoller.run.forkScoped
+        poller <- StatePoller.run.forkScoped
+        observedWorker = new AsyncOperationWorker:
+          def submit(requestId: cn.xuyinyin.flinklab.domain.RequestId, operation: cn.xuyinyin.flinklab.domain.FlinkOperation) = worker.submit(requestId, operation)
+          def process(id: cn.xuyinyin.flinklab.domain.OperationId) = worker.process(id)
+          override def readiness = worker.readiness.zipWith(poller.poll)((healthy, exit) => healthy && exit.isEmpty)
         settings = HttpServerSettings.fromEnv(sys.env)
-        running <- ZIO.acquireRelease(start(settings, api, store, metadataStore, operationStore, worker)) { case (server, executor) =>
+        running <- ZIO.acquireRelease(start(settings, api, store, metadataStore, operationStore, observedWorker)) { case (server, executor) =>
           ZIO.attempt(server.stop(0)).ignore *> ZIO.succeed(executor.shutdown())
         }
         _ <- Console.printLine(s"zio-flink-operator server listening on ${settings.host}:${settings.port}")

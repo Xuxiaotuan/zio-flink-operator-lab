@@ -8,20 +8,24 @@ import zio.*
 
 /** Durable operation store backed by a FlinkOperation custom resource in Kubernetes. */
 final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
+  private val namespace = Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity)
+
   /** 创建 CR；409 映射为幂等冲突，由上层决定是否复用已有 operation。 */
   override def create(operation: Operation): IO[ControlPlaneError, Unit] =
-    api.create(operation.resource.namespace, KubernetesOperationResource.render(operation))
-      .mapError(error => mapError(operation.id, error))
-      .unit
+    if operation.resource.namespace != namespace then
+      ZIO.fail(ControlPlaneError.InvalidPolicy(s"operation namespace must match configured namespace ${namespace.namespaceValue}"))
+    else
+      api.create(namespace, KubernetesOperationResource.render(operation))
+        .mapError(error => mapError(operation.id, error))
+        .unit
 
   /** 读取当前 CR、按领域状态机推进，再带 resourceVersion patch 回 API Server。 */
   override def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation] =
-    val namespace = Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity)
     def attempt(remaining: Int): IO[ControlPlaneError, Operation] =
       for
         raw <- api.get(namespace, ResourceKind.Operation, id.operationIdValue).mapError {
           case KubernetesApiError(404, _) => ControlPlaneError.OperationNotFound(id)
-          case error => transitionError(id, error)
+          case error => transitionError(error)
         }
         current <- ZIO.fromEither(KubernetesOperationResource.parse(raw)).mapError(ControlPlaneError.StoreFailure.apply)
         // 上一次写入响应丢失后重试相同事件，不能重复追加审计记录。
@@ -34,13 +38,12 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
               case Right(_) => ZIO.succeed(advanced)
               // 每次冲突重新读 CR、重新校验状态机；绝不重发带旧 resourceVersion 的文档。
               case Left(KubernetesApiError(409, _)) if remaining > 0 => ZIO.yieldNow *> attempt(remaining - 1)
-              case Left(error) => ZIO.fail(transitionError(id, error))
+              case Left(error) => ZIO.fail(transitionError(error))
           yield result
       yield next
     attempt(3)
 
   override def get(id: OperationId): IO[ControlPlaneError, Option[Operation]] =
-    val namespace = Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity)
     api.get(namespace, ResourceKind.Operation, id.operationIdValue).flatMap { raw =>
       ZIO.fromEither(KubernetesOperationResource.parse(raw).map(Some(_)))
     }.mapError {
@@ -49,9 +52,17 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
       case error: String => ControlPlaneError.StoreFailure(error)
     }.catchSome { case ControlPlaneError.OperationNotFound(_) => ZIO.succeed(None) }
 
-  override def list: IO[ControlPlaneError, List[Operation]] =
-    val namespace = Namespace.from(sys.env.getOrElse("FLINK_NAMESPACE", "default")).fold(_ => Namespace.unsafe("default"), identity)
-    api.list(namespace, ResourceKind.Operation)
+  override def list: IO[ControlPlaneError, List[Operation]] = listSelected(None)
+
+  override def listActive: IO[ControlPlaneError, List[Operation]] =
+    for
+      indexed <- listSelected(Some("xxt.io/operation-active=true"))
+      // 旧 CR 没有活动状态标签；兼容查询仍在本地过滤终态。
+      legacy <- listSelected(Some("!xxt.io/operation-active"))
+    yield (indexed ++ legacy).filter(KubernetesOperationResource.isActive).distinctBy(_.id)
+
+  private def listSelected(labelSelector: Option[String]): IO[ControlPlaneError, List[Operation]] =
+    api.list(namespace, ResourceKind.Operation, labelSelector)
       .flatMap(raw => ZIO.fromEither(KubernetesOperationResource.parseList(raw)))
       .mapError {
         case error: Throwable => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
@@ -59,23 +70,29 @@ final class KubernetesOperationStore(api: KubernetesApi) extends OperationStore:
       }
 
   override def findByRequestId(requestId: RequestId): IO[ControlPlaneError, Option[Operation]] =
-    list.map(_.find(_.requestId == requestId))
+    get(OperationId.forRequest(requestId)).map(_.filter(_.requestId == requestId))
 
   private def mapError(id: OperationId, error: Throwable): ControlPlaneError =
     error match
       case KubernetesApiError(409, _) => ControlPlaneError.OperationAlreadyExists(id)
       case _ => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
 
-  private def transitionError(id: OperationId, error: Throwable): ControlPlaneError =
+  private def transitionError(error: Throwable): ControlPlaneError =
     ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))
 
 object KubernetesOperationResource:
-  /** 将 Operation 放入 FlinkOperation.spec.operation，保留 requestId 标签用于查询。 */
+  private[operation] def isActive(operation: Operation): Boolean =
+    !Set(OperationState.Completed, OperationState.Failed, OperationState.Superseded, OperationState.TimedOut, OperationState.Uncertain).contains(operation.state)
+
+  /** 将原始 requestId 保留在 operation 中，标签使用稳定哈希以满足 Kubernetes 长度和字符限制。 */
   def render(operation: Operation, resourceVersion: Option[String] = None): String =
     val metadata = ujson.Obj(
       "name" -> operation.id.operationIdValue,
       "namespace" -> operation.resource.namespace.namespaceValue,
-      "labels" -> ujson.Obj("xxt.io/request-id" -> operation.requestId.requestIdValue)
+      "labels" -> ujson.Obj(
+        "xxt.io/request-id" -> OperationId.forRequest(operation.requestId).operationIdValue,
+        "xxt.io/operation-active" -> isActive(operation).toString
+      )
     )
     resourceVersion.foreach(value => metadata("resourceVersion") = value)
     ujson.Obj(

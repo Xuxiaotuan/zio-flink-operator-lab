@@ -13,6 +13,24 @@ object VerificationEngineSpec extends ZIOSpecDefault:
   private val ref = ResourceRef(namespace, ResourceKind.Deployment, name)
 
   def spec = suite("verification engine")(
+    test("requires protection evidence for strict savepoint restart") {
+      val operation = FlinkOperation.Restart(ref, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")
+      assertTrue(DefaultVerificationEngine.verify(operation, ref, Evidence.fromObservation(namespace, observation)).isLeft)
+    },
+    test("requires an explicit savepoint and result path for keep-state suspension") {
+      val operation = FlinkOperation.Suspend(ref, SuspendPolicy.KeepState)
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"jobStatus":{"state":"SUSPENDED"},"reconciliationStatus":{"state":"DEPLOYED","lastReconciledSpec":"{\"spec\":{\"job\":{\"upgradeMode\":\"savepoint\"}}}"},"observedGeneration":3}}""")
+      val missing = Evidence.fromObservation(namespace, observation)
+      val protectedEvidence = missing.copy(actualProtection = SnapshotPath.from("s3://snapshots/stop").toOption.map(ActualProtection.Savepoint.apply))
+      assertTrue(DefaultVerificationEngine.verify(operation, ref, missing).isLeft, DefaultVerificationEngine.verify(operation, ref, protectedEvidence).isRight,
+        DefaultVerificationEngine.verify(operation, ref, protectedEvidence.copy(reconciliation = ReconciliationState.Error)).isLeft)
+    },
+    test("requires deletion-specific evidence instead of generic ready evidence") {
+      val operation = FlinkOperation.Delete(ref, DeletePolicy.Graceful)
+      val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")
+      assertTrue(DefaultVerificationEngine.verify(operation, ref, Evidence.fromObservation(namespace, observation)).isLeft)
+    },
     test("accepts a ready observation for deploy") {
       val operation = FlinkOperation.Deploy(FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1)))
       val observation = ResourceObservation(WatchEventType.Added, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"lifecycleState":"STABLE","jobManagerDeploymentStatus":"READY","jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")

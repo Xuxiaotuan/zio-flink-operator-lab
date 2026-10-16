@@ -11,9 +11,29 @@ sbt -batch assembly
 mvn -B -f job/pom.xml package -DskipTests
 ```
 
+### 2026-10-16 修复验证
+
+- 配置独立测试 PostgreSQL 后，`sbt -batch test assembly`：176 个测试通过，4 个外部只读冒烟测试按开关跳过，assembly 成功。
+- 修复覆盖 POST/SSA fieldManager 一致性、写入响应丢失后不自动重放、严格 Restart/Suspend 保护证据、UID/resourceVersion 绑定、删除及快照恢复、幂等创建竞争、缺失资源、有界并发、活动操作查询、HTTP 错误分类和 readiness 响应时限。
+- Flink 1.20.1 语法树解析回归覆盖别名逗号连接、子查询、CTE、CTAS、残缺 SQL 及不支持节点；assembly 中两个 JSON_QUERY 补丁类已核对采用 Flink 的实现。
+- 前端镜像构建通过，其中执行的 Node 测试为 19/19。
+
+打包后的可复现验收：
+
+```sh
+sbt -batch assembly
+python3 src/test/scripts/packaged-http-contract.py
+```
+
+脚本需要 Docker，自动创建仅绑定回环地址的临时 PostgreSQL 和本地 Kubernetes 协议替身，再启动两个实际 JAR 进程。已验证 A 写入 Catalog/Schema/静态血缘、B 读取，跨进程 requestId 幂等和缺失目标 FAILED 查询；使用 JDK 17 启动的两个进程中，暂停临时 PostgreSQL 后，`/readyz` 在约 3.02 秒返回 503，`/healthz` 保持 200。脚本最后删除自己创建的容器并退出两个服务进程，本轮复查无临时资源残留。
+
+这是实际 HTTP 进程、真实 PostgreSQL 与 Kubernetes 协议替身的集成证据，不能替代真实集群的 Operator reconcile、Savepoint/恢复和故障接管验收。本轮未发布到目标集群，下面的现场记录均为历史证据。
+
+### 历史基线与现场记录
+
 当前本地执行结果以本轮实际命令为准。新增覆盖 ResourceObserver 的 resourceVersion/410 relist、PolicyEngine 接入、提交 generation 等待验证、Snapshot CR、Kubernetes Operation CR、资源锁、HTTP typed operation、AsyncOperationWorker、PostgreSQL OperationStore 幂等键和 operation lifecycle 查询；本轮增加 Catalog/Schema Snapshot、PostgreSQL 元数据适配器、表级 SQL_STATIC 血缘解析和目录/血缘 HTTP 契约。
 
-本轮基线结果：`sbt -batch test` 通过 129 个测试（1 个未配置测试 PostgreSQL 的契约用例按条件跳过）；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `20e591858e98bcbdaf9dc8f043cd4df8d7896cc3`）；`node --test src/test/web/app.test.mjs` 通过 19 个测试，`node --check src/main/resources/web/app.js` 通过，`mvn -B -f job/pom.xml package -DskipTests` 成功；前后端镜像构建通过，Nginx 在为本地校验容器补充 `zio-flink-operator=127.0.0.1` upstream 映射后 `nginx -t` 通过。
+2026-10-10/11 历史基线：`sbt -batch test` 通过 129 个测试、5 个按条件跳过（4 个外部 E2E 加 1 个未配置 PostgreSQL 的契约用例）；`sbt -batch assembly` 成功生成 assembly（本轮 SHA-1 `20e591858e98bcbdaf9dc8f043cd4df8d7896cc3`）；`node --test src/test/web/app.test.mjs` 通过 19 个测试，`node --check src/main/resources/web/app.js` 通过，`mvn -B -f job/pom.xml package -DskipTests` 成功；前后端镜像构建通过，Nginx 在为本地校验容器补充 `zio-flink-operator=127.0.0.1` upstream 映射后 `nginx -t` 通过。
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复、单副本故障演练、锁租约接管和 PostgreSQL 双节点运行已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。控制面压力与长稳测试的结果记录在本页最新现场验收中。
 
@@ -41,6 +61,29 @@ mvn -B -f job/pom.xml package -DskipTests
 测试按职责分组：HTTP/domain、typed control-plane、policy、operation store/worker、operation factory、ResourceObserver、fake Kubernetes API、HTTP contract、watch/retry、状态后端和状态轮询。
 
 这些测试默认不连接真实 Kubernetes。HTTP contract test 使用本地 HTTP server，只验证 Kubernetes Java Client 的请求协议。
+
+### 外部 HTTP E2E
+
+`ExternalControlPlaneE2ESpec` 是只读的部署后冒烟测试，访问已经部署的 HTTP 控制面，检查健康检查、namespace 配置、Kubernetes 状态后端、部署/快照和 Catalog/Lineage 查询。它不验证元数据写入持久化、跨副本写后读或真实 Flink 作业完成。它不创建或删除 Flink 资源，因此不会留下临时 CR、Pod、Service 或对象存储数据。
+
+默认关闭，避免普通单测访问网络：
+
+```sh
+sbt -batch "testOnly cn.xuyinyin.flinklab.e2e.ExternalControlPlaneE2ESpec"
+```
+
+显式开启后访问真实 NodePort 或端口转发地址：
+
+```sh
+ZIO_FLINK_E2E_ENABLED=true \
+ZIO_FLINK_E2E_BASE_URL=http://<任一节点>:30882 \
+ZIO_FLINK_E2E_NAMESPACE=bigdata-lab \
+sbt -batch "testOnly cn.xuyinyin.flinklab.e2e.ExternalControlPlaneE2ESpec"
+```
+
+2026-10-11 曾使用 `http://100.82.226.63:30882` 对当时部署的目标集群运行该命令，4 个测试全部通过；测试客户端显式绕过构建机代理，直接验证 NodePort/Service 的真实连通性。
+
+KubeSphere Pipeline 在 API/UI rollout 完成后执行同一套测试，使用集群内的 `zio-flink-operator.<namespace>.svc.cluster.local:8080`，该阶段检查本次部署后的 Service、查询权限和接口连通性；PostgreSQL 存储契约必须另外在独立测试库执行。服务 DNS、RBAC 或依赖网络不可达时，流水线应保留为 `external_blocked`，不能把本地单测结果当作现场通过。
 
 ## 目标集群验证
 

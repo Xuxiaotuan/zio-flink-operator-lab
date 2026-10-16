@@ -23,6 +23,18 @@ object PolicyEngineSpec extends ZIOSpecDefault:
 
   def spec: Spec[TestEnvironment & Scope, Any] =
     suite("policy engine")(
+      test("rejects restart of a non-running job") {
+        val operation = FlinkOperation.Restart(target, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
+        for
+          result <- ZIO.serviceWithZIO[PolicyEngine](_.validate(operation, Some(running.copy(jobState = JobState.Suspended)))).either
+        yield assertTrue(result.left.exists(_.message.contains("RUNNING")))
+      },
+      test("rejects savepoint restart without configured storage") {
+        val operation = FlinkOperation.Restart(target, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
+        for
+          result <- ZIO.serviceWithZIO[PolicyEngine](_.validate(operation, Some(running.copy(savepointDirectory = None)))).either
+        yield assertTrue(result.left.exists(_.message.contains("savepoint storage")))
+      },
       test("requires storage evidence for a strict savepoint upgrade") {
         val missingStorage = running.copy(savepointDirectory = None)
         val operation = FlinkOperation.Upgrade(target, deploymentSpec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))

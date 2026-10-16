@@ -61,6 +61,43 @@ object KubernetesApiHttpContractSpec extends ZIOSpecDefault:
           )
         )
       } @@ TestAspect.withLiveClock,
+      test("create uses the same field manager as subsequent apply") {
+        for
+          state <- ZIO.succeed(new FakeServerState)
+          server <- ZIO.acquireRelease(ZIO.attempt(startServer(state)))(server => ZIO.succeed(server.stop(0)))
+          api = client(server)
+          _ <- api.create(Namespace.unsafe("analytics"), """{"kind":"FlinkDeployment","metadata":{"name":"orders"}}""")
+          requests <- ZIO.succeed(state.requests.asScala.toList)
+        yield assertTrue(requests.size == 1, requests.headOption.exists(request =>
+          request.method == "POST" && request.path.contains("fieldManager=zio-flink-operator-lab")))
+      },
+      test("create preserves the first ambiguous server failure instead of replaying into a conflict") {
+        for
+          state <- ZIO.succeed(new FakeServerState)
+          server <- ZIO.acquireRelease(ZIO.attempt(startServer(state)))(server => ZIO.succeed(server.stop(0)))
+          api = client(server)
+          result <- api.create(Namespace.unsafe("ambiguous"), """{"kind":"FlinkDeployment","metadata":{"name":"orders"}}""").either
+          requests <- ZIO.succeed(state.requests.asScala.toList)
+        yield assertTrue(result.left.toOption.exists { case KubernetesApiError(500, _) => true; case _ => false }, requests.size == 1)
+      } @@ TestAspect.withLiveClock,
+      test("a protected mutation does not replay an ambiguous server failure") {
+        for
+          state <- ZIO.succeed(new FakeServerState)
+          server <- ZIO.acquireRelease(ZIO.attempt(startServer(state)))(server => ZIO.succeed(server.stop(0)))
+          api = client(server)
+          result <- api.patch(Namespace.unsafe("analytics"), ResourceKind.Deployment, "ambiguous", """{"metadata":{"uid":"uid-1","resourceVersion":"7"},"spec":{"restartNonce":1}}""").either
+          requests <- ZIO.succeed(state.requests.asScala.toList)
+        yield assertTrue(result.left.toOption.exists { case KubernetesApiError(500, _) => true; case _ => false }, requests.size == 1)
+      } @@ TestAspect.withLiveClock,
+      test("reads can retry ambiguous server failures") {
+        for
+          state <- ZIO.succeed(new FakeServerState)
+          server <- ZIO.acquireRelease(ZIO.attempt(startServer(state)))(server => ZIO.succeed(server.stop(0)))
+          api = client(server)
+          result <- api.get(Namespace.unsafe("analytics"), ResourceKind.Deployment, "read-retry")
+          requests <- ZIO.succeed(state.requests.asScala.toList)
+        yield assertTrue(result == "{\"object\":true}", requests.size == 2)
+      } @@ TestAspect.withLiveClock,
       test("get and delete use the named custom-resource endpoint") {
         for
           state <- ZIO.succeed(new FakeServerState)
@@ -89,6 +126,19 @@ object KubernetesApiHttpContractSpec extends ZIOSpecDefault:
           requests.size == 1,
           requests.headOption.exists(request => request.method == "GET" && request.path == "/apis/flink.apache.org/v1beta1/namespaces/analytics/flinkstatesnapshots")
         )
+      },
+      test("list sends active and legacy label selectors to the API server") {
+        for
+          state <- ZIO.succeed(new FakeServerState)
+          server <- ZIO.acquireRelease(ZIO.attempt(startServer(state)))(server => ZIO.succeed(server.stop(0)))
+          api = client(server)
+          _ <- api.list(Namespace.unsafe("analytics"), ResourceKind.Operation, Some("xxt.io/operation-active=true"))
+          _ <- api.list(Namespace.unsafe("analytics"), ResourceKind.Operation, Some("!xxt.io/operation-active"))
+          requests <- ZIO.succeed(state.requests.asScala.toList)
+          paths = requests.map(request => java.net.URLDecoder.decode(request.path, StandardCharsets.UTF_8))
+        yield assertTrue(requests.forall(_.method == "GET"), paths == List(
+          "/apis/flink.apache.org/v1beta1/namespaces/analytics/flinkoperations?labelSelector=xxt.io/operation-active=true",
+          "/apis/flink.apache.org/v1beta1/namespaces/analytics/flinkoperations?labelSelector=!xxt.io/operation-active"))
       },
       test("delete carries a UID precondition when one is supplied") {
         for
@@ -141,6 +191,10 @@ object KubernetesApiHttpContractSpec extends ZIOSpecDefault:
           val (status, response) =
             if path.contains("/forbidden") then (403, "{\"error\":\"forbidden\"}")
             else if path.contains("/throttled") then (429, "{\"error\":\"too many requests\"}")
+            else if path.contains("/ambiguous") then
+              if state.requests.size() == 1 then (500, "{\"error\":\"response after possible commit\"}")
+              else (409, "{\"error\":\"already exists or resource version changed\"}")
+            else if path.contains("/read-retry") && state.requests.size() == 1 then (500, "{\"error\":\"temporary\"}")
             else if exchange.getRequestMethod == "PATCH" && contentType.startsWith("application/apply-patch+yaml") then
               val attempt = state.applyAttempts.incrementAndGet()
               if attempt == 1 then (500, "{\"error\":\"temporary\"}")
@@ -148,6 +202,7 @@ object KubernetesApiHttpContractSpec extends ZIOSpecDefault:
             else if exchange.getRequestMethod == "PATCH" then (200, "{\"patched\":true}")
             else if exchange.getRequestMethod == "GET" then (200, "{\"object\":true}")
             else if exchange.getRequestMethod == "DELETE" then (200, "{\"deleted\":true}")
+            else if exchange.getRequestMethod == "POST" then (201, "{\"created\":true}")
             else (404, "{\"error\":\"not found\"}")
           val responseBytes = response.getBytes(StandardCharsets.UTF_8)
           exchange.sendResponseHeaders(status, responseBytes.length.toLong)

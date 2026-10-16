@@ -69,7 +69,16 @@ object KubernetesHttpApi:
     routeWithWorker(request, settings, worker, Some(operationStore), Some(metadataStore)).provide(ZLayer.make[KubernetesApi & StateStore](ZLayer.succeed(api), ZLayer.succeed(store))).catchAll(error => ZIO.succeed(errorResponse(error)))
 
   private def routeWithWorker(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore], metadataStore: Option[MetadataStore] = None): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
-    request.query.get("dryRun").map(_.trim.toLowerCase) match
+    if request.method.equalsIgnoreCase("GET") && request.path == "/readyz" then
+      (for
+        healthy <- worker.readiness
+        _ <- ZIO.fail(ServiceNotReady()).unless(healthy)
+        _ <- metadataStore.map(_.check.mapError(readable)).getOrElse(ZIO.unit)
+      yield ok("{\"status\":\"ok\"}"))
+        // JDBC 取消可能等待驱动返回；断开等待，让探针按时响应，底层连接仍受 socket/statement 超时约束。
+        .disconnect.timeout(3.seconds)
+        .map(_.getOrElse(ApiResponse(503, errorJson("readiness check timed out"))))
+    else request.query.get("dryRun").map(_.trim.toLowerCase) match
       case Some("true") =>
         request.path.split('/').toList.filter(_.nonEmpty) match
           case "v1" :: "deployments" :: Nil => applyDeployment(request, settings)
@@ -88,7 +97,7 @@ object KubernetesHttpApi:
           namespace <- namespaceFor(resource, request.query, settings)
           body = prepareResource(resource, namespace, settings.defaultSavepointDirectory)
           operation <- ZIO.fromEither(FlinkOperationFactory.fromDeploymentJson(namespace.namespaceValue, body).left.map(IllegalArgumentException(_)))
-          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => readable(error))
         yield acceptedResponse(accepted, 202)
       case ("POST", "v1" :: "snapshots" :: Nil) =>
         // 快照也使用同一套 requestId、锁和验证协议。
@@ -96,21 +105,21 @@ object KubernetesHttpApi:
           body <- parseJson(request.body)
           namespace <- namespaceFrom(request.query, settings)
           operation <- ZIO.fromEither(FlinkOperationFactory.fromSnapshotJson(namespace.namespaceValue, body.render()).left.map(IllegalArgumentException(_)))
-          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => readable(error))
         yield acceptedResponse(accepted, 202)
       case ("POST", "v1" :: "deployments" :: name :: "savepoint" :: Nil) =>
         for
           namespace <- namespaceFrom(request.query, settings)
           deploymentName <- deploymentName(name)
           operation = FlinkOperation.Snapshot(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), SnapshotPolicy(cn.xuyinyin.flinklab.domain.SnapshotType.Savepoint))
-          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => readable(error))
         yield acceptedResponse(accepted, 202)
       case ("POST", "v1" :: "deployments" :: name :: "suspend-savepoint" :: Nil) =>
         for
           namespace <- namespaceFrom(request.query, settings)
           deploymentName <- deploymentName(name)
           operation = FlinkOperation.Suspend(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), SuspendPolicy.KeepState)
-          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => readable(error))
         yield acceptedResponse(accepted, 202)
       case ("POST", "v1" :: "deployments" :: name :: "upgrade" :: Nil) =>
         for
@@ -124,14 +133,14 @@ object KubernetesHttpApi:
           policy <- policyFrom(request.query, spec.job.stateProtection)
           _ <- ZIO.fail(IllegalArgumentException("upgradeMode query must match job.upgradeMode")).unless(request.query.get("upgradeMode").orElse(request.query.get("upgrade-mode")).isEmpty || policy.protection == spec.job.stateProtection)
           operation = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), spec, policy)
-          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => readable(error))
         yield acceptedResponse(accepted, 202)
       case ("POST", "v1" :: "deployments" :: name :: "resume" :: Nil) =>
         for
           namespace <- namespaceFrom(request.query, settings)
           deploymentName <- deploymentName(name)
           operation = FlinkOperation.Resume(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)))
-          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => readable(error))
         yield acceptedResponse(accepted, 202)
       case ("POST", "v1" :: "deployments" :: name :: "restart" :: Nil) =>
         for
@@ -139,14 +148,14 @@ object KubernetesHttpApi:
           deploymentName <- deploymentName(name)
           policy <- policyFrom(request.query, StateProtection.Stateless)
           operation = FlinkOperation.Restart(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), policy)
-          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => readable(error))
         yield acceptedResponse(accepted, 202)
       case ("DELETE", "v1" :: "deployments" :: name :: Nil) =>
         for
           namespace <- namespaceFrom(request.query, settings)
           deploymentName <- deploymentName(name)
           operation = FlinkOperation.Delete(ResourceRef(namespace, ResourceKind.Deployment, cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.unsafe(deploymentName)), DeletePolicy.Graceful)
-          accepted <- worker.submit(requestId(request), operation).mapError(error => IllegalArgumentException(error.message))
+          accepted <- worker.submit(requestId(request), operation).mapError(error => readable(error))
         yield acceptedResponse(accepted, 202)
       case ("GET", "v1" :: "operations" :: id :: Nil) =>
         // operation 查询只读持久化 store，不触发 worker 或 Kubernetes 副作用。
@@ -155,7 +164,7 @@ object KubernetesHttpApi:
           case Some(store) =>
             for
               operationId <- ZIO.fromEither(cn.xuyinyin.flinklab.domain.OperationId.from(id).left.map(IllegalArgumentException(_)))
-              operation <- store.get(operationId).mapError(error => IllegalArgumentException(error.message))
+              operation <- store.get(operationId).mapError(error => readable(error))
             yield operation.map(value => ok(value.json.render())).getOrElse(ApiResponse(404, errorJson("operation not found")))
       case _ => route(request, settings, metadataStore)
 
@@ -179,7 +188,7 @@ object KubernetesHttpApi:
           store <- metadata(metadataStore)
           body <- parseJson(request.body)
           catalog <- ZIO.fromEither(MetadataJson.catalog(body).left.map(IllegalArgumentException(_)))
-          created <- store.createCatalog(catalog).mapError(error => IllegalArgumentException(error.message))
+          created <- store.createCatalog(catalog).mapError(error => readable(error))
         yield ApiResponse(201, created.json.render())
       case ("POST", "v1" :: "catalogs" :: catalogId :: "snapshots" :: Nil) =>
         for
@@ -187,11 +196,11 @@ object KubernetesHttpApi:
           body <- parseJson(request.body)
           snapshot <- ZIO.fromEither(MetadataJson.snapshot(body).left.map(IllegalArgumentException(_)))
           _ <- ZIO.fail(IllegalArgumentException("catalog id does not match snapshot")) unless snapshot.catalogId == catalogId
-          _ <- store.saveSnapshot(snapshot).mapError(error => IllegalArgumentException(error.message))
+          _ <- store.saveSnapshot(snapshot).mapError(error => readable(error))
         yield ApiResponse(201, snapshot.json.render())
       case ("GET", "v1" :: "catalogs" :: catalogId :: "schemas" :: Nil) =>
-        metadata(metadataStore).flatMap(_.listSnapshots(catalogId)).mapError(e => readable(e)).map { values =>
-          val schemas = values.map(_.schema).distinct.sorted.map(schema => ujson.Obj("name" -> schema))
+        metadata(metadataStore).flatMap(_.listSchemas(catalogId)).mapError(e => readable(e)).map { values =>
+          val schemas = values.map(schema => ujson.Obj("name" -> schema))
           ok(ujson.Obj("items" -> ujson.Arr(schemas*)).render())
         }
       case ("GET", "v1" :: "catalogs" :: catalogId :: "tables" :: Nil) =>
@@ -200,7 +209,7 @@ object KubernetesHttpApi:
         for
           store <- metadata(metadataStore)
           schema <- ZIO.fromOption(request.query.get("schema")).orElseFail(IllegalArgumentException("schema query is required"))
-          value <- store.getTable(catalogId, schema, name).mapError(error => IllegalArgumentException(error.message))
+          value <- store.getTable(catalogId, schema, name).mapError(error => readable(error))
         yield value.map(table => ok(table.json.render())).getOrElse(ApiResponse(404, errorJson("table not found")))
       case ("GET", "v1" :: "lineage" :: "graph" :: Nil) =>
         for root <- ZIO.fromOption(request.query.get("root")).orElseFail(IllegalArgumentException("root query is required")); values <- metadata(metadataStore).flatMap(_.graph(root)).mapError(e => readable(e)) yield ok(ujson.Obj("items" -> ujson.Arr(values.map(_.json)*), "root" -> root).render())
@@ -234,9 +243,12 @@ object KubernetesHttpApi:
       case _ => ZIO.succeed(ApiResponse(404, errorJson("route not found")))
 
   private def metadata(store: Option[MetadataStore]): IO[Throwable, MetadataStore] = ZIO.fromOption(store).orElseFail(IllegalArgumentException("metadata store is not configured"))
-  private def readable(error: Throwable | ControlPlaneError): IllegalArgumentException = error match
-    case value: ControlPlaneError => IllegalArgumentException(value.message)
-    case value: Throwable => IllegalArgumentException(Option(value.getMessage).getOrElse(value.toString))
+  /** HTTP 边界保留领域错误类别，数据库/集群故障不能伪装成客户端参数错误。 */
+  private final case class ServiceNotReady() extends RuntimeException("operation workers or recovery scanner are unavailable")
+  private final case class ControlPlaneHttpFailure(error: ControlPlaneError) extends RuntimeException(error.message)
+  private def readable(error: Throwable | ControlPlaneError): Throwable = error match
+    case value: ControlPlaneError => ControlPlaneHttpFailure(value)
+    case value: Throwable => value
 
   private def submitStaticLineage(request: ApiRequest, metadataStore: Option[MetadataStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
@@ -246,7 +258,7 @@ object KubernetesHttpApi:
       jobId = body.obj.get("jobId").flatMap(_.strOpt)
       observedAt = body.obj.get("observedAt").flatMap(_.strOpt).getOrElse(java.time.Instant.now().toString)
       edges <- ZIO.fromEither(SqlLineageParser.extract(sql, observedAt).left.map(IllegalArgumentException(_)))
-      _ <- ZIO.foreachDiscard(edges)(edge => store.saveLineage(edge.copy(jobId = jobId)).mapError(error => IllegalArgumentException(error.message)))
+      _ <- ZIO.foreachDiscard(edges)(edge => store.saveLineage(edge.copy(jobId = jobId)).mapError(error => readable(error)))
     yield ApiResponse(201, ujson.Obj("items" -> ujson.Arr(edges.map(_.copy(jobId = jobId).json)*), "sourceType" -> "SQL_STATIC", "evidenceStatus" -> (if edges.isEmpty then "UNKNOWN" else "STATIC_INFERENCE")).render())
 
   private def applyDeployment(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
@@ -507,8 +519,14 @@ object KubernetesHttpApi:
 
   private def errorResponse(error: Throwable): ApiResponse =
     val status = error match
+      case ControlPlaneHttpFailure(_: ControlPlaneError.InvalidPolicy) => 400
+      case ControlPlaneHttpFailure(_: ControlPlaneError.OperationNotFound) => 404
+      case ControlPlaneHttpFailure(_: ControlPlaneError.ResourceBusy | _: ControlPlaneError.OperationAlreadyExists | _: ControlPlaneError.InvalidTransition) => 409
+      case ControlPlaneHttpFailure(_: ControlPlaneError.StoreFailure) => 503
+      case _: ServiceNotReady => 503
+      case _: java.sql.SQLException => 503
       case _: IllegalArgumentException => 400
-      case _                           => 502
+      case _ => 502
     ApiResponse(status, errorJson(Option(error.getMessage).getOrElse(error.toString)))
 
   def errorJson(message: String): String =

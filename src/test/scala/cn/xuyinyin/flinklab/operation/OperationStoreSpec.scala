@@ -21,6 +21,28 @@ object OperationStoreSpec extends ZIOSpecDefault:
 
   def spec: Spec[TestEnvironment & Scope, Any] =
     suite("operation store")(
+      test("concurrent different commands cannot reuse the same request id after create conflict") {
+        for
+          delegate <- InMemoryOperationStore.make
+          lookups <- Ref.make(0)
+          bothRead <- Promise.make[Nothing, Unit]
+          store = new OperationStore:
+            def create(value: Operation) = delegate.create(value)
+            def transition(id: OperationId, event: OperationEvent) = delegate.transition(id, event)
+            def get(id: OperationId) = delegate.get(id)
+            def list = ZIO.succeed(Nil)
+            override def findByRequestId(id: RequestId) = lookups.updateAndGet(_ + 1).flatMap {
+              case count if count <= 2 => bothRead.succeed(()).when(count == 2) *> bothRead.await.as(None)
+              case _ => delegate.findByRequestId(id)
+            }
+          controlPlane = new DefaultFlinkControlPlane(store)
+          requestId = RequestId.from("concurrent-request").toOption.get
+          results <- controlPlane.accept(requestId, FlinkOperation.Resume(resource)).either.zipPar(
+            controlPlane.accept(requestId, FlinkOperation.Delete(resource, DeletePolicy.Graceful)).either)
+          stored <- delegate.list
+        yield assertTrue(List(results._1, results._2).count(_.isRight) == 1,
+          List(results._1, results._2).count(_.left.exists(_.message.contains("different operation"))) == 1, stored.size == 1)
+      },
       test("creates and transitions an operation atomically") {
         for
           store <- ZIO.service[OperationStore]

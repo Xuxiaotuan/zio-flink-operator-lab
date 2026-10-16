@@ -33,6 +33,8 @@ final class DefaultPolicyEngine extends PolicyEngine:
         for
           _ <- ZIO.fromEither(policy.validate)
           observed <- ZIO.fromOption(current).orElseFail(InvalidPolicy("restart requires an observed target resource"))
+          _ <- ZIO.fail(InvalidPolicy("restart target is not RUNNING")).unless(observed.jobState == JobState.Running)
+          _ <- ZIO.fail(InvalidPolicy("savepoint storage is not configured")).when(policy.protection == StateProtection.Savepoint && observed.savepointDirectory.isEmpty)
           _ <- ZIO.fail(InvalidPolicy("restart target does not match observed resource")).unless(observed.resource.namespace == target.namespace && observed.resource.kind == target.kind && observed.resource.name == target.name)
         yield ValidatedOperation(operation, Some(observed))
       case FlinkOperation.Snapshot(_, _) =>

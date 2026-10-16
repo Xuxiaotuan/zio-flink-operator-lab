@@ -20,7 +20,7 @@ object PostgresMetadataStoreSpec extends ZIOSpecDefault:
       val table = TableMetadata(id, "public", "orders", Nil, at)
       val snapshot = SchemaSnapshot(id, "public", "v1", List(table), at)
       val edge = LineageEdge(LineageNode.Dataset(id + ".source"), LineageNode.Dataset(id + ".target"), "INSERT", "SQL_STATIC", 0.7, at)
-      for
+      (for
         _ <- first.initialize
         _ <- first.createCatalog(catalog)
         repeated <- second.createCatalog(catalog).either
@@ -37,6 +37,7 @@ object PostgresMetadataStoreSpec extends ZIOSpecDefault:
         _ <- first.saveLineage(edge)
         _ <- second.saveLineage(edge.copy(observedAt = "2026-10-11T00:00:00Z"))
         graph <- first.graph(edge.target.name)
-      yield assertTrue(repeated == Right(catalog), conflict.isFailure, orphan.isFailure, current.isEmpty, other.size == 1, history.size == 3, graph.size == 1, graph.headOption.exists(_.observedAt == "2026-10-11T00:00:00Z"))
+      yield assertTrue(repeated == Right(catalog), conflict.isFailure, orphan.isFailure, current.isEmpty, other.size == 1, history.size == 3, graph.size == 1, graph.headOption.exists(_.observedAt == "2026-10-11T00:00:00Z")))
+        .ensuring(first.close *> second.close)
     } @@ TestAspect.ifEnv("ZIO_FLINK_METADATA_TEST_JDBC_URL")(_.nonEmpty)
   )

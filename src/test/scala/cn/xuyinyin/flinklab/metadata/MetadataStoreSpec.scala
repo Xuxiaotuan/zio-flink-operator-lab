@@ -42,6 +42,15 @@ object MetadataStoreSpec extends ZIOSpecDefault:
       val snapshot = SchemaSnapshot("warehouse", "public", "v1", List(table.copy(catalogId = "elsewhere")), at)
       assertTrue(bad.validate.isLeft, snapshot.validate.isLeft)
     },
+    test("late lineage observations do not overwrite newer evidence") {
+      for
+        store <- InMemoryMetadataStore.make
+        edge = LineageEdge(LineageNode.Dataset("raw.orders"), LineageNode.Dataset("analytics.orders"), "SELECT", "SQL_STATIC", 0.7, "2026-10-16T00:00:00Z")
+        _ <- store.saveLineage(edge)
+        _ <- store.saveLineage(edge.copy(observedAt = "2026-10-15T00:00:00Z"))
+        graph <- store.graph("analytics.orders")
+      yield assertTrue(graph.size == 1, graph.head.observedAt == "2026-10-16T00:00:00Z")
+    },
     test("metadata store selection is explicit") {
       assertTrue(MetadataStore.configured(Map.empty).isRight, MetadataStore.configured(Map("ZIO_FLINK_METADATA_STORE" -> "memory")).isRight, MetadataStore.configured(Map("ZIO_FLINK_METADATA_STORE" -> "unknown")).isLeft)
     }

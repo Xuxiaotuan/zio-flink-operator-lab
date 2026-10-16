@@ -6,7 +6,8 @@ import cn.xuyinyin.flinklab.domain.FlinkTypes.Namespace
 import cn.xuyinyin.flinklab.kubernetes.KubernetesApi
 import zio.*
 
-import java.sql.{Connection, DriverManager, ResultSet}
+import java.sql.{Connection, ResultSet}
+import cn.xuyinyin.flinklab.storage.JdbcPool
 import java.time.Instant
 
 /** 状态观测的事实来源；Kubernetes 是默认模式，Postgres 是外置审计模式。 */
@@ -183,6 +184,7 @@ object StateRecord:
 trait StateStore:
   def backend: StateBackend
   def initialize: IO[Throwable, Unit] = ZIO.unit
+  def close: UIO[Unit] = ZIO.unit
   def putJournal(journal: StateJournal): IO[Throwable, Unit]
   def getJournal(key: StateKey): IO[Throwable, Option[StateJournal]]
   def listJournals(namespace: Namespace): IO[Throwable, List[StateJournal]]
@@ -214,6 +216,8 @@ final class KubernetesStateStore(api: KubernetesApi) extends StateStore:
 
 /** PostgreSQL 模式保存最新观测、resourceVersion 和有限生命周期历史。 */
 final class PostgresStateStore(settings: StateStoreSettings) extends StateStore:
+  private val pool = new JdbcPool(settings.jdbcUrl.get, settings.username.get, settings.password.get)
+  override def close: UIO[Unit] = ZIO.attemptBlocking(pool.close()).orDie
   override val backend: StateBackend = StateBackend.Postgres
 
   override def initialize: IO[Throwable, Unit] =
@@ -340,19 +344,18 @@ final class PostgresStateStore(settings: StateStoreSettings) extends StateStore:
       ujson.read(result.getString("lifecycle_json")).arr.toList.map(_.obj), result.getBoolean("deleted"))
 
   private def withConnection[A](f: Connection => A): A =
-    val connection = DriverManager.getConnection(settings.jdbcUrl.get, settings.username.get, settings.password.get)
-    try f(connection)
-    finally connection.close()
+    pool.withConnection(f)
 
 object StateStore:
   val live: ZLayer[KubernetesApi, Throwable, StateStore] =
-    ZLayer.fromZIO {
+    ZLayer.scoped {
       for
         api <- ZIO.service[KubernetesApi]
         settings <- ZIO.fromEither(StateStoreSettings.fromEnv(sys.env).left.map(IllegalArgumentException(_)))
-      yield settings.backend match
-        case StateBackend.Kubernetes => new KubernetesStateStore(api)
-        case StateBackend.Postgres => new PostgresStateStore(settings)
+        store <- ZIO.acquireRelease(ZIO.attempt[StateStore](settings.backend match
+          case StateBackend.Kubernetes => new KubernetesStateStore(api)
+          case StateBackend.Postgres => new PostgresStateStore(settings)))(_.close)
+      yield store
     }
 
   def kubernetes(api: KubernetesApi): StateStore = new KubernetesStateStore(api)

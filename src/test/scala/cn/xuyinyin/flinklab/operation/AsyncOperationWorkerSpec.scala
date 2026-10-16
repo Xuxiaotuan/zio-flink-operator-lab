@@ -17,6 +17,11 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
   private val name = DeploymentName.unsafe("orders")
   private val operation = FlinkOperation.Deploy(FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1)))
 
+  private val currentResource = """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"7","uid":"uid","generation":1},"spec":{"flinkConfiguration":{"state.savepoints.dir":"s3://savepoints/orders"}},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":1}}"""
+  private def pointGet(kind: ResourceKind) =
+    if kind == ResourceKind.StateSnapshot then ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(404, "not found"))
+    else ZIO.succeed(currentResource)
+
   def spec = suite("async operation worker")(
     test("a replica that cannot acquire the lease leaves the operation untouched") {
       for
@@ -26,8 +31,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         coordinator = new ResourceCoordinator:
           def withLock[A](resource: ResourceRef, operationId: OperationId)(effect: IO[ControlPlaneError, A]) = ZIO.fail(ControlPlaneError.ResourceBusy(resource))
         api = new KubernetesApi:
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(IllegalStateException("must not submit"))
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         observer = new ResourceObserver:
@@ -46,8 +52,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         _ <- store.transition(accepted.operationId, OperationEvent.ValidationPassed(Instant.now()))
         calls <- Ref.make(0)
         api = new KubernetesApi:
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = calls.update(_ + 1).as("{}")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         observer = new ResourceObserver:
@@ -61,8 +68,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
     test("submits, observes and completes a deployment operation") {
       for
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"8","generation":3}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"8","generation":3,"uid":"uid"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -72,7 +80,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         store <- InMemoryOperationStore.make
         mutex <- OperationMutex.make
         worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
-        accepted <- worker.submit(RequestId.from("req-1").toOption.get, operation)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-1").toOption.get, operation)
         completed <- worker.process(accepted.operationId)
       yield assertTrue(completed.state == OperationState.Completed, completed.events.exists(_.isInstanceOf[OperationEvent.VerificationSucceeded]))
     },
@@ -80,8 +88,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
       for
         records <- Ref.make(Vector.empty[String])
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"9","generation":1}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"9","generation":1,"uid":"snapshot-uid"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -93,7 +102,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         mutex <- OperationMutex.make
         worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
         operation = FlinkOperation.Snapshot(ResourceRef(namespace, ResourceKind.Deployment, name), SnapshotPolicy(SnapshotType.Savepoint, Some(snapshotName)))
-        accepted <- worker.submit(RequestId.from("req-snapshot").toOption.get, operation)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-snapshot").toOption.get, operation)
         completed <- worker.process(accepted.operationId)
         applied <- records.get
       yield assertTrue(completed.state == OperationState.Completed, applied.exists(_.contains("FlinkStateSnapshot")), applied.exists(_.contains("orders-savepoint")))
@@ -101,8 +110,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
     test("preserves an operator rejection instead of masking it as a generation mismatch") {
       for
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"generation":1,"resourceVersion":"2"}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"generation":1,"resourceVersion":"2","uid":"uid"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -123,8 +133,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
     test("terminalizes an abandoned snapshot instead of waiting for a timeout") {
       for
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"10"}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"10","uid":"snapshot-uid"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -136,7 +147,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         mutex <- OperationMutex.make
         worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
         operation = FlinkOperation.Snapshot(ResourceRef(namespace, ResourceKind.Deployment, name), SnapshotPolicy(SnapshotType.Savepoint, Some(snapshotName)))
-        accepted <- worker.submit(RequestId.from("req-abandoned").toOption.get, operation)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-abandoned").toOption.get, operation)
         _ <- worker.process(accepted.operationId).either
         stored <- store.get(accepted.operationId)
       yield assertTrue(stored.exists(_.state == OperationState.Failed), stored.exists(_.events.exists(_.toString.contains("job is not running"))))
@@ -145,8 +156,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
       for
         records <- Ref.make(Vector.empty[String])
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"11","generation":2}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"11","generation":2,"uid":"uid"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -158,7 +170,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
         spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1), savepointDirectory = Some("s3://savepoints/orders"))
         operation = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, name), spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
-        accepted <- worker.submit(RequestId.from("req-upgrade").toOption.get, operation)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-upgrade").toOption.get, operation)
         completed <- worker.process(accepted.operationId)
         applied <- records.get
       yield assertTrue(completed.state == OperationState.Completed, applied.exists(raw => raw.contains("\"upgradeMode\":\"savepoint\"") && raw.contains("kubernetes.operator.job.upgrade.last-state-fallback.enabled")))
@@ -166,8 +178,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
     test("records fallback detected when the operator explicitly reconciles last-state") {
       for
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"11","generation":2}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"11","generation":2,"uid":"uid"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -179,15 +192,16 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, new cn.xuyinyin.flinklab.application.DefaultPolicyEngine)
         spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.WordCount", 1, StateProtection.Savepoint), savepointDirectory = Some("s3://savepoints/orders"))
         operation = FlinkOperation.Upgrade(ResourceRef(namespace, ResourceKind.Deployment, name), spec, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.AllowLastState))
-        accepted <- worker.submit(RequestId.from("req-fallback").toOption.get, operation)
+        accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-fallback").toOption.get, operation)
         completed <- worker.process(accepted.operationId)
       yield assertTrue(completed.state == OperationState.Completed, completed.events.exists(_.isInstanceOf[OperationEvent.FallbackDetected]))
     },
     test("resumes a verifying operation from its persisted event chain") {
       for
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"8","generation":3}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"8","generation":3,"uid":"uid"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -200,7 +214,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-recovery").toOption.get, operation)
         _ <- store.transition(accepted.operationId, OperationEvent.ValidationStarted(Instant.now()))
         _ <- store.transition(accepted.operationId, OperationEvent.ValidationPassed(Instant.now()))
-        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(3).toOption, ResourceVersion.from("8").toOption))
+        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(3).toOption, ResourceVersion.from("8").toOption, ResourceUid.from("uid").toOption))
         _ <- store.transition(accepted.operationId, OperationEvent.WaitingForObservation(Instant.now()))
         _ <- store.transition(accepted.operationId, OperationEvent.VerificationStarted(Instant.now()))
         completed <- worker.process(accepted.operationId)
@@ -209,8 +223,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
     test("resumes a submitted operation through waiting before verification") {
       for
         api <- ZIO.succeed(new KubernetesApi:
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException("must not resubmit"))
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -223,15 +238,16 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-submitted-recovery").toOption.get, operation)
         _ <- store.transition(accepted.operationId, OperationEvent.ValidationStarted(Instant.now()))
         _ <- store.transition(accepted.operationId, OperationEvent.ValidationPassed(Instant.now()))
-        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(3).toOption, ResourceVersion.from("8").toOption))
+        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(3).toOption, ResourceVersion.from("8").toOption, ResourceUid.from("uid").toOption))
         completed <- worker.process(accepted.operationId)
       yield assertTrue(completed.state == OperationState.Completed, completed.events.exists(_.isInstanceOf[OperationEvent.WaitingForObservation]), completed.events.exists(_.isInstanceOf[OperationEvent.VerificationStarted]))
     },
     test("classifies an explicit Kubernetes 4xx submission rejection as failed") {
       for
         api <- ZIO.succeed(new KubernetesApi:
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(403, "forbidden"))
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -251,8 +267,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
     test("records fallback after recovering an upgrade verification") {
       for
         api <- ZIO.succeed(new KubernetesApi:
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException("must not resubmit"))
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )
@@ -267,7 +284,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-recovered-fallback").toOption.get, upgrade)
         _ <- store.transition(accepted.operationId, OperationEvent.ValidationStarted(Instant.now()))
         _ <- store.transition(accepted.operationId, OperationEvent.ValidationPassed(Instant.now()))
-        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(2).toOption, ResourceVersion.from("11").toOption))
+        _ <- store.transition(accepted.operationId, OperationEvent.Submitted(Instant.now(), Generation.from(2).toOption, ResourceVersion.from("11").toOption, ResourceUid.from("uid").toOption))
         _ <- store.transition(accepted.operationId, OperationEvent.WaitingForObservation(Instant.now()))
         _ <- store.transition(accepted.operationId, OperationEvent.VerificationStarted(Instant.now()))
         completed <- worker.process(accepted.operationId)
@@ -276,8 +293,9 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
     test("fails an upgrade when a ready observation omits protection evidence") {
       for
         api <- ZIO.succeed(new KubernetesApi:
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"11","generation":2}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
+          override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"11","generation":2,"uid":"uid"}}""")
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
         )

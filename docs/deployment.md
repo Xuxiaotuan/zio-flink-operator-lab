@@ -70,6 +70,16 @@ open http://<任一节点>:30882/
 
 Flink 冷启动和 TaskManager 调度可能超过短轮询窗口，worker 的提交、删除和验证超时由 `ZIO_FLINK_VERIFICATION_TIMEOUT_SECONDS` 控制，默认 180 秒；现场集群可以按镜像拉取和调度时延调整。
 
+## 执行边界与健康检查
+
+每个 API 副本默认使用 4 个操作 worker，可用 `ZIO_FLINK_WORKER_PARALLELISM` 调整（1～64）。同一资源仍由进程内互斥和 Kubernetes 租约串行执行；不同资源可并发，重启后按持久化操作恢复，队列同时对已排队和执行中的 operationId 去重。
+
+`/healthz` 表示 HTTP 进程存活；生产 `/readyz` 还检查操作扫描器和 worker fiber、状态轮询 fiber 以及元数据连接。检查超时或后台退出返回 503，不能用健康接口替代 Flink 操作验收。
+
+PostgreSQL 的每个存储适配器最多使用 4 个池化连接，随服务 Scope 关闭。建连/借连接超时 5 秒、网络读取超时 15 秒，服务端语句超时 10 秒、锁等待超时 5 秒。三个 PostgreSQL 适配器全部启用时，每个 API 副本最多占用 12 个数据库连接；只有元数据使用 PostgreSQL 时最多 4 个。部署前需按副本数预留数据库连接预算。
+
+前端镜像构建会先执行 Node 测试，测试通过后才复制静态资源到 Nginx。Pipeline 在 API/UI rollout 后执行外部只读冒烟测试；该阶段不会创建临时 Flink 任务。
+
 ## RustFS
 
 savepoint 使用独立 bucket：

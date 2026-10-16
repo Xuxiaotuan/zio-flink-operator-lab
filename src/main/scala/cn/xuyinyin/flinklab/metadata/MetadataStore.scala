@@ -5,11 +5,14 @@ import zio.*
 
 trait MetadataStore:
   def initialize: IO[Throwable, Unit] = ZIO.unit
+  def close: UIO[Unit] = ZIO.unit
+  def check: IO[ControlPlaneError, Unit] = listCatalogs.unit
   def listCatalogs: IO[ControlPlaneError, List[CatalogRegistration]]
   def createCatalog(catalog: CatalogRegistration): IO[ControlPlaneError, CatalogRegistration]
   def listTables(catalogId: String, schema: Option[String]): IO[ControlPlaneError, List[TableMetadata]]
   def getTable(catalogId: String, schema: String, name: String): IO[ControlPlaneError, Option[TableMetadata]]
   def listSnapshots(catalogId: String): IO[ControlPlaneError, List[SchemaSnapshot]]
+  def listSchemas(catalogId: String): IO[ControlPlaneError, List[String]] = listSnapshots(catalogId).map(_.map(_.schema).distinct.sorted)
   def saveSnapshot(snapshot: SchemaSnapshot): IO[ControlPlaneError, Unit]
   def saveLineage(edge: LineageEdge): IO[ControlPlaneError, Unit]
   def graph(root: String): IO[ControlPlaneError, List[LineageEdge]]
@@ -50,7 +53,12 @@ final class InMemoryMetadataStore private (ref: Ref[MetadataStoreState]) extends
         current.copy(snapshots = current.snapshots.filterNot(s => s.catalogId == snapshot.catalogId && s.schema == snapshot.schema && s.version == snapshot.version) :+ snapshot)
       }
     yield ()
-  override def saveLineage(edge: LineageEdge) = ref.update(state => state.copy(edges = (edge :: state.edges).distinctBy(e => (e.source.name, e.target.name, e.operation, e.sourceType, e.jobId)))).unit
+  override def saveLineage(edge: LineageEdge) = ref.update { state =>
+    val key = (edge.source.name, edge.target.name, edge.operation, edge.sourceType, edge.jobId)
+    val existing = state.edges.find(e => (e.source.name, e.target.name, e.operation, e.sourceType, e.jobId) == key)
+    if existing.exists(e => java.time.Instant.parse(e.observedAt).isAfter(java.time.Instant.parse(edge.observedAt))) then state
+    else state.copy(edges = (edge :: state.edges).distinctBy(e => (e.source.name, e.target.name, e.operation, e.sourceType, e.jobId)))
+  }.unit
   override def graph(root: String) = ref.get.map(_.edges.filter(edge => edge.source.name == root || edge.target.name == root).reverse)
 
 final case class MetadataStoreState(catalogs: Map[String, CatalogRegistration] = Map.empty, snapshots: List[SchemaSnapshot] = Nil, edges: List[LineageEdge] = Nil)

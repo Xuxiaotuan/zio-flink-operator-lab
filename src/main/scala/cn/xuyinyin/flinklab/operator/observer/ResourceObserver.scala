@@ -27,7 +27,29 @@ trait ResourceObserver:
 object ResourceObserver:
   def live(api: KubernetesApi): ResourceObserver = new DefaultResourceObserver(api)
 
+  /** 对点查 GET 与 list/watch 使用同一套元数据解析规则。 */
+  def fromGet(kind: ResourceKind, raw: String): Task[ResourceObservation] =
+    ZIO.attempt(fromResource(WatchEventType.Added, ujson.read(raw), kind))
+
+  private[observer] def fromResource(eventType: WatchEventType, value: ujson.Value, kind: ResourceKind): ResourceObservation =
+    val metadata = value.obj.get("metadata").flatMap(_.objOpt).getOrElse(Map.empty[String, ujson.Value])
+    val name = stringValue(metadata.get("name")).filter(_.nonEmpty).getOrElse(throw IllegalArgumentException("observed resource metadata.name is required"))
+    ResourceObservation(
+      eventType,
+      kind,
+      name,
+      stringValue(metadata.get("resourceVersion")),
+      stringValue(metadata.get("uid")),
+      longValue(metadata.get("generation")),
+      value.obj.get("status").flatMap(_.objOpt).flatMap(_.get("observedGeneration")).flatMap(value => longValue(Some(value))),
+      value.render()
+    )
+
+  private[observer] def stringValue(value: Option[ujson.Value]): Option[String] = value.flatMap(item => item.strOpt.orElse(item.numOpt.map(_.toString))).filter(_.nonEmpty)
+  private def longValue(value: Option[ujson.Value]): Option[Long] = value.flatMap(item => item.numOpt.map(_.toLong).orElse(item.strOpt.flatMap(_.toLongOption)))
+
 final class DefaultResourceObserver(api: KubernetesApi) extends ResourceObserver:
+  import ResourceObserver.*
   /** 每个 cycle 先 list 获取快照和 resourceVersion，再从该版本开始 watch。 */
   override def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]): ZStream[Any, Throwable, ResourceObservation] =
     // cycle 是可重入的：410 重新 list，正常断线从新的 list 继续。
@@ -72,20 +94,3 @@ final class DefaultResourceObserver(api: KubernetesApi) extends ResourceObserver
     if event.eventType == WatchEventType.Bookmark then ZIO.fail(IllegalArgumentException("bookmark does not carry a resource observation"))
     else if event.eventType == WatchEventType.Error then ZIO.fail(IllegalArgumentException("watch error event was not classified by KubernetesApi"))
     else ZIO.attempt(fromResource(event.eventType, event.resource, kind))
-
-  private def fromResource(eventType: WatchEventType, value: ujson.Value, kind: ResourceKind): ResourceObservation =
-    val metadata = value.obj.get("metadata").flatMap(_.objOpt).getOrElse(Map.empty[String, ujson.Value])
-    val name = stringValue(metadata.get("name")).filter(_.nonEmpty).getOrElse(throw IllegalArgumentException("observed resource metadata.name is required"))
-    ResourceObservation(
-      eventType,
-      kind,
-      name,
-      stringValue(metadata.get("resourceVersion")),
-      stringValue(metadata.get("uid")),
-      longValue(metadata.get("generation")),
-      value.obj.get("status").flatMap(_.objOpt).flatMap(_.get("observedGeneration")).flatMap(value => longValue(Some(value))),
-      value.render()
-    )
-
-  private def stringValue(value: Option[ujson.Value]): Option[String] = value.flatMap(item => item.strOpt.orElse(item.numOpt.map(_.toString))).filter(_.nonEmpty)
-  private def longValue(value: Option[ujson.Value]): Option[Long] = value.flatMap(item => item.numOpt.map(_.toLong).orElse(item.strOpt.flatMap(_.toLongOption)))

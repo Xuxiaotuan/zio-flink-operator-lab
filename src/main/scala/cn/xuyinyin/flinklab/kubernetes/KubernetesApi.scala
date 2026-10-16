@@ -21,6 +21,8 @@ trait KubernetesApi:
     ZIO.fail(UnsupportedOperationException("create is not implemented by this KubernetesApi"))
   def list(namespace: Namespace, kind: ResourceKind): IO[Throwable, String] =
     ZIO.fail(UnsupportedOperationException("list is not implemented by this KubernetesApi"))
+  def list(namespace: Namespace, kind: ResourceKind, labelSelector: Option[String]): IO[Throwable, String] =
+    list(namespace, kind)
   def get(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
   def delete(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String]
   def delete(namespace: Namespace, kind: ResourceKind, name: String, uid: Option[ResourceUid]): IO[Throwable, String] = delete(namespace, kind, name)
@@ -52,6 +54,8 @@ object KubernetesApiSettings:
 /** Direct Kubernetes API adapter. It submits Flink CRs through the API server. */
 final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: => ApiClient) extends KubernetesApi:
   private lazy val apiClient = suppliedClient
+  // 重试由下面的 HTTP 方法/状态码规则决定，禁止 OkHttp 在未知写入结果后暗中重放。
+  private lazy val requestClient = apiClient.getHttpClient.newBuilder().retryOnConnectionFailure(false).build()
 
   override def apply(namespace: Namespace, resource: String, dryRun: Boolean): IO[Throwable, String] =
     for
@@ -81,14 +85,17 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
     for
       value <- ZIO.attempt(ujson.read(resource))
       kind <- ZIO.fromEither(value.obj.get("kind").flatMap(_.strOpt).toRight(IllegalArgumentException("Flink resource kind is required")))
-      result <- request("POST", collectionPath(namespace, apiResource(kind)), body = Some(resource), contentType = "application/json")
+      result <- request("POST", collectionPath(namespace, apiResource(kind)), query = Map("fieldManager" -> settings.fieldManager), body = Some(resource), contentType = "application/json")
     yield result
 
   override def get(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String] =
     request("GET", resourcePath(namespace, apiResource(kind), name))
 
   override def list(namespace: Namespace, kind: ResourceKind): IO[Throwable, String] =
-    request("GET", collectionPath(namespace, apiResource(kind)))
+    list(namespace, kind, None)
+
+  override def list(namespace: Namespace, kind: ResourceKind, labelSelector: Option[String]): IO[Throwable, String] =
+    request("GET", collectionPath(namespace, apiResource(kind)), query = labelSelector.map("labelSelector" -> _).toMap)
 
   override def delete(namespace: Namespace, kind: ResourceKind, name: String): IO[Throwable, String] =
     request("DELETE", resourcePath(namespace, apiResource(kind), name))
@@ -227,7 +234,7 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
         case Some(value) =>
           requestWithoutBody.newBuilder().method(method, RequestBody.create(value, MediaType.parse(contentType))).build()
         case None => requestWithoutBody
-      val response = apiClient.getHttpClient.newCall(request).execute()
+      val response = requestClient.newCall(request).execute()
       try
         val responseBody = Option(response.body()).map(_.string()).getOrElse("")
         // 非 2xx 统一转成 KubernetesApiError，下面的 retry 只按状态码分类。
@@ -235,13 +242,14 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
         else throw KubernetesApiError(response.code(), responseBody)
       finally response.close()
     }
-    // 429/5xx/网络中断可重试，4xx 权限或参数错误必须立即返回。
-    effect.retry((Schedule.exponential(50.millis) && Schedule.recurs(settings.maxRetries)).whileInput(isRetryable))
+    // 只有读取和 dry-run 能安全重放未知结果；真实变更仅重试明确拒绝执行的 429。
+    val safeToReplay = method == "GET" || method == "HEAD" || query.get("dryRun").contains("All")
+    effect.retry((Schedule.exponential(50.millis) && Schedule.recurs(settings.maxRetries)).whileInput(error => isRetryable(error, safeToReplay)))
 
-  private def isRetryable(error: Throwable): Boolean =
+  private def isRetryable(error: Throwable, safeToReplay: Boolean): Boolean =
     error match
-      case KubernetesApiError(status, _) => status == 429 || status >= 500
-      case _: java.io.IOException           => true
+      case KubernetesApiError(status, _) => status == 429 || (safeToReplay && status >= 500)
+      case _: java.io.IOException           => safeToReplay
       case _                                => false
 
 object KubernetesApiLive:

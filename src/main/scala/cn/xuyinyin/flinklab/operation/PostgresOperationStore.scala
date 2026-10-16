@@ -4,7 +4,8 @@ package cn.xuyinyin.flinklab.operation
 import cn.xuyinyin.flinklab.domain.*
 import zio.*
 
-import java.sql.{Connection, DriverManager}
+import java.sql.Connection
+import cn.xuyinyin.flinklab.storage.JdbcPool
 
 final case class OperationStoreSettings(
     jdbcUrl: String,
@@ -33,6 +34,8 @@ object OperationStoreSettings:
     yield settings
 
 final class PostgresOperationStore(settings: OperationStoreSettings) extends OperationStore:
+  private val pool = new JdbcPool(settings.jdbcUrl, settings.username, settings.password)
+  override def close: UIO[Unit] = ZIO.attemptBlocking(pool.close()).orDie
   /** 建表并补齐 request_id 唯一索引；初始化可重复执行。 */
   override def initialize: IO[Throwable, Unit] =
     ZIO.attemptBlocking {
@@ -44,6 +47,7 @@ final class PostgresOperationStore(settings: OperationStoreSettings) extends Ope
           statement.executeUpdate(s"UPDATE ${settings.table} SET request_id = operation_id WHERE request_id IS NULL")
           statement.executeUpdate(s"ALTER TABLE ${settings.table} ALTER COLUMN request_id SET NOT NULL")
           statement.executeUpdate(s"CREATE UNIQUE INDEX IF NOT EXISTS ${settings.table}_request_id_uq ON ${settings.table} (request_id)")
+          statement.executeUpdate(s"CREATE INDEX IF NOT EXISTS ${settings.table}_active_idx ON ${settings.table} ((operation_json::jsonb ->> 'state'))")
         finally statement.close()
       }
     }
@@ -109,12 +113,17 @@ final class PostgresOperationStore(settings: OperationStoreSettings) extends Ope
       }
     }.mapError(error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))).flatMap(ZIO.fromEither)
 
-  override def list: IO[ControlPlaneError, List[Operation]] =
+  override def list: IO[ControlPlaneError, List[Operation]] = readOperations("")
+
+  override def listActive: IO[ControlPlaneError, List[Operation]] =
+    readOperations(" WHERE operation_json::jsonb ->> 'state' IN ('ACCEPTED','VALIDATING','SUBMITTED','WAITINGFOROBSERVATION','RECONCILING','VERIFYING')")
+
+  private def readOperations(filter: String): IO[ControlPlaneError, List[Operation]] =
     ZIO.attemptBlocking {
       withConnection { connection =>
         val statement = connection.createStatement()
         try
-          val result = statement.executeQuery(s"SELECT operation_json FROM ${settings.table} ORDER BY updated_at, operation_id")
+          val result = statement.executeQuery(s"SELECT operation_json FROM ${settings.table}$filter ORDER BY updated_at, operation_id")
           try
             val builder = List.newBuilder[Operation]
             while result.next() do OperationCodec.fromJson(result.getString(1)) match
@@ -142,8 +151,6 @@ final class PostgresOperationStore(settings: OperationStoreSettings) extends Ope
     }.mapError(error => ControlPlaneError.StoreFailure(Option(error.getMessage).getOrElse(error.toString))).flatMap(ZIO.fromEither)
 
   private def withConnection[A](f: Connection => A): A =
-    val connection = DriverManager.getConnection(settings.jdbcUrl, settings.username, settings.password)
-    try f(connection)
-    finally connection.close()
+    pool.withConnection(f)
 
 private final case class StoreTransitionException(error: ControlPlaneError) extends RuntimeException(error.message)

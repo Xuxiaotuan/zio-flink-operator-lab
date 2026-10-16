@@ -112,4 +112,15 @@ Kubernetes 部署默认使用 API Server 中的 Flink CR 作为多副本共享�
 
 当前服务读取 Operator CR 的状态摘要。逐个 checkpoint 的 task/subtask 明细需要 Flink REST，当前不属于 Kubernetes API 适配器。目标集群的 Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、Savepoint 恢复连续性、控制面 Pod 故障演练、FlinkOperationLock 租约接管和 PostgreSQL 双节点运行已有真实验收记录；压力和长稳指标覆盖控制面接口，不代表生产容量。
 
-Catalog、Schema Snapshot 和 SQL 静态血缘见 [Catalog 与血缘](docs/metadata-lineage.md)。构建、Kubernetes/RustFS 配置和多副本部署见 [部署](docs/deployment.md)；验证记录见 [测试与证据](docs/testing.md)。
+SQL 静态血缘使用 Flink 1.20.1 SQL Parser 的语法树提取表关系；语法解析不包含 Catalog/类型校验或执行计划生成。Catalog、Schema Snapshot 和 SQL 静态血缘见 [Catalog 与血缘](docs/metadata-lineage.md)。构建、Kubernetes/RustFS 配置和多副本部署见 [部署](docs/deployment.md)；验证记录见 [测试与证据](docs/testing.md)。
+
+部署后可以显式运行只读的真实 HTTP E2E：
+
+```sh
+ZIO_FLINK_E2E_ENABLED=true \
+ZIO_FLINK_E2E_BASE_URL=http://<任一节点>:30882 \
+ZIO_FLINK_E2E_NAMESPACE=bigdata-lab \
+sbt -batch "testOnly cn.xuyinyin.flinklab.e2e.ExternalControlPlaneE2ESpec"
+```
+
+普通 `sbt test` 不访问外部网络；KubeSphere Pipeline 会在 rollout 完成后自动运行这套 E2E。 需要复验打包后的双进程共享 PostgreSQL、SQL 解析和依赖故障时，可在 Docker 可用的本机执行 `python3 src/test/scripts/packaged-http-contract.py`；脚本会清理自己的临时容器和进程。

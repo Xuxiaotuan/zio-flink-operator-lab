@@ -8,18 +8,18 @@ import zio.*
 /** Operation 的持久化端口；实现可以是 Kubernetes CR、PostgreSQL 或测试内存。 */
 trait OperationStore:
   def initialize: IO[Throwable, Unit] = ZIO.unit
+  def close: UIO[Unit] = ZIO.unit
   def create(operation: Operation): IO[ControlPlaneError, Unit]
   def transition(id: OperationId, event: OperationEvent): IO[ControlPlaneError, Operation]
   def get(id: OperationId): IO[ControlPlaneError, Option[Operation]]
   def list: IO[ControlPlaneError, List[Operation]]
+  def listActive: IO[ControlPlaneError, List[Operation]] =
+    list.map(_.filter(operation => !Set(OperationState.Completed, OperationState.Failed, OperationState.Superseded, OperationState.TimedOut, OperationState.Uncertain).contains(operation.state)))
   def findByRequestId(requestId: RequestId): IO[ControlPlaneError, Option[Operation]] =
     list.map(_.find(_.requestId == requestId))
   def supersedeActive(resource: ResourceRef, replacement: OperationId): IO[ControlPlaneError, Unit] =
-    list.flatMap { operations =>
-      ZIO.foreachDiscard(operations.filter(operation =>
-        operation.id != replacement && operation.resource == resource &&
-          !Set(OperationState.Completed, OperationState.Failed, OperationState.Superseded, OperationState.TimedOut, OperationState.Uncertain).contains(operation.state)
-      ))(operation => transition(operation.id, OperationEvent.Superseded(java.time.Instant.now(), replacement)).unit)
+    listActive.flatMap { operations =>
+      ZIO.foreachDiscard(operations.filter(operation => operation.id != replacement && operation.resource == resource))(operation => transition(operation.id, OperationEvent.Superseded(java.time.Instant.now(), replacement)).unit)
     }
 
 /** 只用于单进程测试，不提供跨副本持久性。 */
@@ -53,12 +53,13 @@ object InMemoryOperationStore:
 
 object OperationStore:
   val live: ZLayer[KubernetesApi, Throwable, OperationStore] =
-    ZLayer.fromZIO {
-      sys.env.get("ZIO_FLINK_OPERATION_STORE").map(_.trim.toLowerCase) match
+    ZLayer.scoped {
+      val make = sys.env.get("ZIO_FLINK_OPERATION_STORE").map(_.trim.toLowerCase) match
         case Some("postgres") | Some("postgresql") =>
           ZIO.fromEither(OperationStoreSettings.fromEnv(sys.env).left.map(IllegalArgumentException(_))).map(new PostgresOperationStore(_))
         case Some("memory") | Some("in-memory") => InMemoryOperationStore.make.map(identity[OperationStore])
         case _ => ZIO.service[KubernetesApi].map(new KubernetesOperationStore(_))
+      ZIO.acquireRelease(make)(_.close)
     }
 
 final case class AcceptedOperation(
@@ -90,15 +91,16 @@ final class DefaultFlinkControlPlane(store: OperationStore) extends FlinkControl
       case None =>
         val accepted = Operation.accepted(requestId, operation, resource, now)
         // list 只是快速发现冲突；create 的唯一约束/CR 409 才是并发请求的最终裁决。
-        store.list.flatMap { operations =>
-          val active = operations.find(existing => existing.resource == resource && !Set(OperationState.Completed, OperationState.Failed, OperationState.Superseded, OperationState.TimedOut, OperationState.Uncertain).contains(existing.state))
+        store.listActive.flatMap { operations =>
+          val active = operations.find(_.resource == resource)
           active match
             case Some(existing) => ZIO.fail(ControlPlaneError.ResourceBusy(existing.resource))
             case None => store.create(accepted).as(AcceptedOperation(accepted.id, requestId, now))
         }.catchSome {
           case ControlPlaneError.OperationAlreadyExists(_) =>
             store.findByRequestId(requestId).flatMap {
-              case Some(existing) => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))
+              case Some(existing) if existing.command == operation => ZIO.succeed(AcceptedOperation(existing.id, existing.requestId, existing.createdAt))
+              case Some(_) => ZIO.fail(ControlPlaneError.InvalidPolicy("request id is already bound to a different operation"))
               case None => ZIO.fail(ControlPlaneError.OperationAlreadyExists(accepted.id))
             }
         }
