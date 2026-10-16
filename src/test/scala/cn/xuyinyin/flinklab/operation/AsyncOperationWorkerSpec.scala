@@ -35,7 +35,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(IllegalStateException("must not submit"))
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) = ZStream.empty
         worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex, coordinator = coordinator)
@@ -56,7 +56,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = calls.update(_ + 1).as("{}")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) = ZStream.empty
         worker = new DefaultAsyncOperationWorker(api, observer, DefaultVerificationEngine, store, mutex)
@@ -72,7 +72,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"8","generation":3,"uid":"uid"}}""")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
@@ -92,7 +92,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"9","generation":1,"uid":"snapshot-uid"}}""")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         snapshotName = DeploymentName.unsafe("orders-savepoint")
         observer = new ResourceObserver:
@@ -114,7 +114,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"generation":1,"resourceVersion":"2","uid":"uid"}}""")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
@@ -137,7 +137,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"10","uid":"snapshot-uid"}}""")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         snapshotName = DeploymentName.unsafe("orders-abandoned")
         observer = new ResourceObserver:
@@ -152,15 +152,15 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         stored <- store.get(accepted.operationId)
       yield assertTrue(stored.exists(_.state == OperationState.Failed), stored.exists(_.events.exists(_.toString.contains("job is not running"))))
     },
-    test("applies the validated upgrade protection and fallback policy") {
+    test("upgrades a POST-created resource with a UID and resourceVersion guarded merge patch") {
       for
         records <- Ref.make(Vector.empty[String])
         api <- ZIO.succeed(new KubernetesApi:
           override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
-          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = records.update(_ :+ resource).as("""{"metadata":{"resourceVersion":"11","generation":2,"uid":"uid"}}""")
+          def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(409, "Apply conflicts with POST Update ownership"))
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = records.update(_ :+ patch).as("""{"metadata":{"resourceVersion":"11","generation":2,"uid":"uid"}}""")
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
@@ -173,7 +173,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         accepted <- new DefaultFlinkControlPlane(store).accept(RequestId.from("req-upgrade").toOption.get, operation)
         completed <- worker.process(accepted.operationId)
         applied <- records.get
-      yield assertTrue(completed.state == OperationState.Completed, applied.exists(raw => raw.contains("\"upgradeMode\":\"savepoint\"") && raw.contains("kubernetes.operator.job.upgrade.last-state-fallback.enabled")))
+      yield assertTrue(completed.state == OperationState.Completed, applied.exists(raw => ujson.read(raw)("metadata")("uid").str == "uid" && ujson.read(raw)("metadata")("resourceVersion").str == "7" && raw.contains("\"upgradeMode\":\"savepoint\"") && raw.contains("kubernetes.operator.job.upgrade.last-state-fallback.enabled")))
     },
     test("records fallback detected when the operator explicitly reconciles last-state") {
       for
@@ -182,7 +182,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"11","generation":2,"uid":"uid"}}""")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
@@ -203,7 +203,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"8","generation":3,"uid":"uid"}}""")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
@@ -227,7 +227,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException("must not resubmit"))
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
@@ -249,7 +249,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(403, "forbidden"))
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) = ZStream.empty
@@ -271,7 +271,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(UnsupportedOperationException("must not resubmit"))
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =
@@ -297,7 +297,7 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"11","generation":2,"uid":"uid"}}""")
           def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
-          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = ZIO.succeed("")
+          def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
         observer = new ResourceObserver:
           def observe(namespace: Namespace, kind: ResourceKind, name: Option[String]) =

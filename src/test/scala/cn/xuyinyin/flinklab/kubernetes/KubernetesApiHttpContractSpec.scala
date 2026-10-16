@@ -61,7 +61,7 @@ object KubernetesApiHttpContractSpec extends ZIOSpecDefault:
           )
         )
       } @@ TestAspect.withLiveClock,
-      test("create uses the same field manager as subsequent apply") {
+      test("create identifies the update field manager") {
         for
           state <- ZIO.succeed(new FakeServerState)
           server <- ZIO.acquireRelease(ZIO.attempt(startServer(state)))(server => ZIO.succeed(server.stop(0)))

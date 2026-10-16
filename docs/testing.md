@@ -14,7 +14,7 @@ mvn -B -f job/pom.xml package -DskipTests
 ### 2026-10-16 修复验证
 
 - 配置独立测试 PostgreSQL 后，`sbt -batch test assembly`：176 个测试通过，4 个外部只读冒烟测试按开关跳过，assembly 成功。
-- 修复覆盖 POST/SSA fieldManager 一致性、写入响应丢失后不自动重放、严格 Restart/Suspend 保护证据、UID/resourceVersion 绑定、删除及快照恢复、幂等创建竞争、缺失资源、有界并发、活动操作查询、HTTP 错误分类和 readiness 响应时限。
+- 修复覆盖 POST 创建与 UID/resourceVersion 约束的 merge patch 更新、写入响应丢失后不自动重放、严格 Restart/Suspend 保护证据、UID/resourceVersion 绑定、删除及快照恢复、幂等创建竞争、缺失资源、有界并发、活动操作查询、HTTP 错误分类和 readiness 响应时限。
 - Flink 1.20.1 语法树解析回归覆盖别名逗号连接、子查询、CTE、CTAS、残缺 SQL 及不支持节点；assembly 中两个 JSON_QUERY 补丁类已核对采用 Flink 的实现。
 - 前端镜像构建通过，其中执行的 Node 测试为 19/19。
 

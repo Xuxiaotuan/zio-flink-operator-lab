@@ -298,8 +298,9 @@ final class DefaultAsyncOperationWorker(
     operation match
       case FlinkOperation.Deploy(spec) =>
         if observed.isEmpty then api.create(spec.namespace, spec.resource.render())
-        else api.apply(spec.namespace, bound(spec.resource.render()), dryRun = false)
-      case FlinkOperation.Upgrade(target, spec, _) => api.apply(target.namespace, bound(spec.resource.render()), dryRun = false)
+        // POST 创建的字段属于 Update；已有资源统一使用 CAS merge patch，避免与 SSA 的 Apply 所有权自冲突。
+        else api.patch(spec.namespace, ResourceKind.Deployment, spec.name.nameValue, bound(spec.resource.render()))
+      case FlinkOperation.Upgrade(target, spec, _) => api.patch(target.namespace, target.kind, target.name.nameValue, bound(spec.resource.render()))
       case FlinkOperation.Suspend(target, policy) => api.patch(target.namespace, target.kind, target.name.nameValue, bound(if policy == SuspendPolicy.KeepState then cn.xuyinyin.flinklab.operator.savepoint.SavepointPatch.suspend else """{"spec":{"job":{"state":"suspended","upgradeMode":"stateless"}}}"""))
       case FlinkOperation.Resume(target) => api.patch(target.namespace, target.kind, target.name.nameValue, bound("""{"spec":{"job":{"state":"running"}}}"""))
       case FlinkOperation.Restart(target, policy) =>
