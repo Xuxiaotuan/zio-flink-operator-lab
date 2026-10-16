@@ -21,7 +21,7 @@
       "execution.checkpointing.interval": "5s",
       "state.checkpoints.dir": "s3://flink-savepoints/zio-e2e/checkpoints/",
       "state.savepoints.dir": "s3://flink-savepoints/zio-e2e/savepoints/",
-      "s3.endpoint": "http://rustfs.bigdata-lab.svc.cluster.local:9000",
+      "s3.endpoint": "http://rustfs.bigdata-lab.svc.cluster.local.:9000",
       "s3.path.style.access": "true",
       "kubernetes.env.secretKeyRef": "env:AWS_ACCESS_KEY_ID,secret:rustfs-credentials,key:access-key;env:AWS_SECRET_ACCESS_KEY,secret:rustfs-credentials,key:secret-key"
     },

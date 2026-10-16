@@ -83,7 +83,7 @@ sbt -batch "testOnly cn.xuyinyin.flinklab.e2e.ExternalControlPlaneE2ESpec"
 
 2026-10-11 曾使用 `http://100.82.226.63:30882` 对当时部署的目标集群运行该命令，4 个测试全部通过；测试客户端显式绕过构建机代理，直接验证 NodePort/Service 的真实连通性。
 
-KubeSphere Pipeline 在 API/UI rollout 完成后执行同一套测试，使用集群内的 `zio-flink-operator.<namespace>.svc.cluster.local:8080`，该阶段检查本次部署后的 Service、查询权限和接口连通性；PostgreSQL 存储契约必须另外在独立测试库执行。服务 DNS、RBAC 或依赖网络不可达时，流水线应保留为 `external_blocked`，不能把本地单测结果当作现场通过。
+KubeSphere Pipeline 在 API/UI rollout 完成后执行同一套测试，使用集群内的 `zio-flink-operator.<namespace>.svc.cluster.local.:8080`，该阶段检查本次部署后的 Service、查询权限和接口连通性；PostgreSQL 存储契约必须另外在独立测试库执行。服务 DNS、RBAC 或依赖网络不可达时，流水线应保留为 `external_blocked`，不能把本地单测结果当作现场通过。
 
 ## 目标集群验证
 

@@ -151,7 +151,7 @@ spec:
                 sh '''
                   set -eu
                   export ZIO_FLINK_E2E_ENABLED=true
-                  export ZIO_FLINK_E2E_BASE_URL="http://zio-flink-operator.${TARGET_NAMESPACE}.svc.cluster.local:8080"
+                  export ZIO_FLINK_E2E_BASE_URL="http://zio-flink-operator.${TARGET_NAMESPACE}.svc.cluster.local.:8080"
                   export ZIO_FLINK_E2E_NAMESPACE="$TARGET_NAMESPACE"
                   export JAVA_HOME="${JAVA_HOME:-/opt/java/openjdk}"
                   export JAVA_TOOL_OPTIONS="-Dhttp.proxyHost=100.95.135.45 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=100.95.135.45 -Dhttps.proxyPort=7890 -Djava.net.useSystemProxies=false"
