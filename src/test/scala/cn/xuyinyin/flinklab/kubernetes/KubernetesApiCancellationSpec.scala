@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 object KubernetesApiCancellationSpec extends ZIOSpecDefault:
   private val ns = Namespace.unsafe("analytics")
   private val target = ResourceRef(ns, ResourceKind.Deployment, DeploymentName.unsafe("orders"))
-  private final class Probe(val partialBody: Boolean):
+  private final class Probe(val partialBody: Boolean, watchRequest: Boolean = false):
     val received = new CountDownLatch(1)
     val unblock = new CountDownLatch(1)
     val canceled = new CountDownLatch(1)
@@ -56,8 +56,8 @@ object KubernetesApiCancellationSpec extends ZIOSpecDefault:
         else
           mutations.incrementAndGet()
           if partialBody then
-            exchange.sendResponseHeaders(200, 100)
-            exchange.getResponseBody.write('{'.toInt)
+            exchange.sendResponseHeaders(200, if watchRequest then 0 else 100)
+            if !watchRequest then exchange.getResponseBody.write('{'.toInt)
             exchange.getResponseBody.flush()
           received.countDown()
           unblock.await(55, TimeUnit.SECONDS)
@@ -70,12 +70,27 @@ object KubernetesApiCancellationSpec extends ZIOSpecDefault:
       executor.shutdownNow()
       ()
 
-  private def probe(partialBody: Boolean) = ZIO.acquireRelease(ZIO.attempt(new Probe(partialBody)))(value => ZIO.succeed(value.close()))
+  private def probe(partialBody: Boolean, watchRequest: Boolean = false) = ZIO.acquireRelease(ZIO.attempt(new Probe(partialBody, watchRequest)))(value => ZIO.succeed(value.close()))
   private def arrived(latch: CountDownLatch) = ZIO.attemptBlocking(latch.await(2, TimeUnit.SECONDS))
 
   def spec = suite("kubernetes transport cancellation")(
+    test("watch waiting for response headers exits and releases the connection on interruption") { cancelWatch(partialBody = false) },
+    test("watch with no events exits and releases the connection on interruption") { cancelWatch(partialBody = true) },
     test("interrupt cancels a request waiting for response headers") { cancelRequest(partialBody = false) },
     test("interrupt cancels and closes a response while reading its body") { cancelRequest(partialBody = true) },
+    test("lease loss closes an idle watch before releasing the lock") {
+      for
+        p <- probe(partialBody = true, watchRequest = true)
+        fiber <- new KubernetesResourceCoordinator(p.api).withLock(target, OperationId.generate())(
+          p.api.watchFrom(ns, ResourceKind.Deployment, Some("orders"), Some("9")).runDrain.mapError(error => ControlPlaneError.StoreFailure(error.toString))
+        ).either.fork
+        received <- arrived(p.received)
+        _ <- ZIO.sleep(41.seconds)
+        canceled <- arrived(p.canceled)
+        released <- arrived(p.released)
+        result <- fiber.join
+      yield assertTrue(received, canceled, released, p.cancelBeforeUnlock.get(), result.isLeft, p.mutations.get() == 1)
+    } @@ TestAspect.withLiveClock @@ TestAspect.timeout(55.seconds),
     test("lease loss cancels the in-flight mutation before releasing the lock") {
       for
         p <- probe(partialBody = true)
@@ -89,7 +104,7 @@ object KubernetesApiCancellationSpec extends ZIOSpecDefault:
         result <- fiber.join
       yield assertTrue(received, canceled, p.cancelBeforeUnlock.get(), result.isLeft, p.mutations.get() == 1)
     } @@ TestAspect.withLiveClock @@ TestAspect.timeout(55.seconds)
-  ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)
+  ) @@ TestAspect.timeout(60.seconds)
 
   private def cancelRequest(partialBody: Boolean) =
     for
@@ -103,3 +118,17 @@ object KubernetesApiCancellationSpec extends ZIOSpecDefault:
       exit <- interrupt.join
       released <- arrived(p.released)
     yield assertTrue(received, canceled, released, exit.isInterrupted, p.mutations.get() == 1)
+
+  /** 不先放开服务端：必须在阻塞仍存在时，证明观察 fiber 有界退出和 socket 已关闭。 */
+  private def cancelWatch(partialBody: Boolean) =
+    for
+      p <- probe(partialBody, watchRequest = true)
+      fiber <- p.api.watchFrom(ns, ResourceKind.Deployment, Some("orders"), Some("9")).runDrain.fork
+      received <- arrived(p.received)
+      interrupt <- fiber.interrupt.fork
+      canceled <- arrived(p.canceled)
+      finished <- Live.live(interrupt.join.timeout(500.millis))
+      released <- arrived(p.released)
+      _ <- ZIO.succeed(p.unblock.countDown())
+      exit <- interrupt.join
+    yield assertTrue(received, canceled, finished.nonEmpty, released, exit.isInterrupted, p.mutations.get() == 1)

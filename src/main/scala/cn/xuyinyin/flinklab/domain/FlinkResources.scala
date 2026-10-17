@@ -47,6 +47,9 @@ final case class FlinkDeploymentSpec(
     taskManagerResources: FlinkProcessResources = FlinkProcessResources(),
     podTemplate: Option[ujson.Obj] = None
 ):
+  /** 任一恢复字段出现就视为恢复意图；缺少配对字段应由策略拒绝，不能退回普通部署。 */
+  def requestsSavepointRestore: Boolean = job.initialSavepointPath.nonEmpty || job.savepointRedeployNonce.nonEmpty
+
   def json: Obj =
     val spec = Obj(
       "image" -> image,

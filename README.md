@@ -4,7 +4,7 @@
 
 程序只提供 HTTP 入口，不调用 `kubectl`，不直接操作 JobManager。Kubernetes CR 是期望状态和状态来源，Flink Kubernetes Operator 负责实际 reconcile。
 
-操作持久化会保留策略与证据，并重放事件校验状态；Resume 需要 `RUNNING + READY`，未知结果不会靠重试推断成功。第一阶段修复的测试边界见 [测试与证据](docs/testing.md)，持久化格式升级需按 [部署说明](docs/deployment.md#持久化格式升级) 统一切换全部 API 副本。
+普通部署只创建新目标；已有作业通过 Upgrade 变更，指定 savepoint 恢复继续保留。预览参数只解析一次，Watch 的建连和事件等待均可取消。操作持久化会保留策略与证据，并重放事件校验状态；Resume 需要 `RUNNING + READY`，未知结果不会靠重试推断成功。第一阶段修复的测试边界见 [测试与证据](docs/testing.md)，持久化格式升级需按 [部署说明](docs/deployment.md#持久化格式升级) 统一切换全部 API 副本。
 
 从 [文档入口](docs/README.md) 开始。
 

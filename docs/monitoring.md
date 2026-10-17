@@ -29,6 +29,10 @@ curl -fsS -X POST 'http://127.0.0.1:8080/v1/deployments?namespace=flink-lineage-
 curl -fsS 'http://127.0.0.1:8080/v1/operations/<operationId>'
 ```
 
+普通部署接口只创建新目标；已有作业变更使用 `POST /v1/deployments/{name}/upgrade?upgradeMode=savepoint&fallback=forbidden`，提交带目标名称的完整部署 JSON。指定 savepoint 恢复仍使用 `POST /v1/deployments`，参数配对和递增 nonce 规则见 [预览与指定恢复](design.md#预览与指定恢复)。
+
+预览部署或快照时增加 `dryRun=true`，返回资源预览而非 operation。首尾空白与大小写会统一解析；非法值以及不支持预览的变更接口返回 400，不会退回真实执行。
+
 创建 checkpoint 或 savepoint 请求：
 
 ```sh

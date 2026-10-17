@@ -83,7 +83,8 @@ object MetadataHttpApiSpec extends ZIOSpecDefault:
         pending <- KubernetesHttpApi.handleWith(fake, KubernetesStateStore(fake), metadata, worker, ApiRequest("GET", "/readyz"), settings).fork
         _ <- started.await
         _ <- TestClock.adjust(3.seconds)
-        atDeadline <- pending.poll
+        // 推进测试时钟只唤醒定时器；依赖仍保持阻塞，有界等待 HTTP fiber 实际交付响应，避免即时 poll 的调度竞态。
+        atDeadline <- Live.live(pending.await.timeout(1.second))
         _ <- release.succeed(())
         response <- pending.join
       yield assertTrue(atDeadline.exists { case Exit.Success(value) => value.status == 503; case _ => false }, response.status == 503)

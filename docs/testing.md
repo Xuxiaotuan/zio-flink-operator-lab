@@ -11,6 +11,16 @@ sbt -batch assembly
 mvn -B -f job/pom.xml package -DskipTests
 ```
 
+### 预览、更新策略与 Watch 取消（2026-10-17）
+
+- 最终代码执行 `sbt -batch test assembly`：204 个测试通过、0 失败、6 个按开关跳过，assembly 成功。另行开启临时 PostgreSQL 的两个契约用例，2/2 通过；打包后的双 JAR HTTP 契约通过，暂停数据库时 `/readyz` 约 3.02 秒返回 503、`/healthz` 保持 200。两个进程、临时测试表及容器已清理。
+- dry-run 回归覆盖 deployment/snapshot 的大小写、空格、制表符、非法值和不支持的方法；所有合法预览都传 `dryRun=true`，不入队、不创建 operation。底层 HTTP 契约继续验证 `dryRun=All`。
+- PolicyEngine/worker 回归覆盖普通 Deploy 拒绝已有目标、暂停目标的指定 savepoint 恢复、旧 nonce 在写入前拒绝，以及重启后 path/nonce 不匹配时等待超时且不重放变更。恢复 Boolean 与 path/nonce 的持久化保持不变。
+- Watch 使用真实 TCP/OkHttp 验证等待响应头、建连后无事件时的有界中断、取消和连接释放；HTTP 409 模拟续租失败，分别确认普通请求与 Watch 在释放锁前取消。响应头阻塞测试已先在旧实现复现失败。
+- readiness 原有即时 poll 断言存在调度竞态：推进 TestClock 后改为有界等待响应交付，同时保持依赖未释放，不改变服务端 3 秒超时，也不放宽“依赖仍阻塞时应先返回 503”的条件。
+
+此处只记录本地与协议边界结果；本轮修复的目标集群验收将在部署后另记。下文 Pipeline #48 仍只代表 `65397d9`。
+
 ### 第一阶段可靠性修复（2026-10-16）
 
 - `sbt -batch test assembly`：193 个测试通过、0 失败、6 个按开关跳过，assembly 成功。相对上一发布新增 18 个回归用例。
@@ -20,7 +30,7 @@ mvn -B -f job/pom.xml package -DskipTests
 - 另建仅映射回环地址的临时 PostgreSQL，开启 `PostgresRuntimeContractSpec` 和 `PostgresMetadataStoreSpec`：2/2 通过。两个 store 共享非默认暂停策略与状态，损坏活动历史的 get/listActive/transition 均拒绝恢复。测试表和临时容器已删除。
 - 使用本轮 assembly 重跑 `packaged-http-contract.py`：两个真实 JAR HTTP 进程共享 Catalog/Schema/血缘和 requestId；依赖中断时 `/readyz` 约 3.02 秒返回 503，`/healthz` 仍为 200。两个进程及临时 PostgreSQL 已清理，复查无测试容器残留。
 
-本阶段没有部署到 bigdata-lab，也没有重跑真实 Flink/Operator/RustFS 验收；该版本的目标集群证据为 `evidence_incomplete`。下面 Pipeline #47 的现场结果属于上一发布，不能充当本轮修复的现场证明。ExecutionPlan、状态机扩展、CRD/status 迁移及 HTTP 框架更换不在本阶段范围。
+以上是本地验证结果；同一代码 `65397d9` 随后的目标集群部署与真实验收见下文 Pipeline #48。ExecutionPlan、状态机扩展、CRD/status 迁移及 HTTP 框架更换不在本阶段范围。
 
 复现聚焦测试：
 
@@ -52,6 +62,44 @@ python3 src/test/scripts/packaged-http-contract.py
 这是实际 HTTP 进程、真实 PostgreSQL 与 Kubernetes 协议替身的集成证据。真实集群结果单独记录在下文，二者不能相互替代。
 
 ## 最新真实验收（2026-10-16）
+
+发布代码 `65397d9`，PipelineRun `zio-flink-operator-lab-95hv9`（Jenkins `#48`）为 `Succeeded` / `Finished: SUCCESS`。流水线通过 193 个测试（6 个按条件跳过）、assembly、镜像构建推送和部署后 4/4 HTTP 检查。API/UI 标签均为 `build-48-65397d98a2d6`；API 镜像 digest 为 `sha256:ccd17a89719437b41b641b143eab301366d69e0c2cb31f4a0f81a217812e29ac`。
+
+### 统一切换与运行状态
+
+部署前备份并用新解码器读取全部 18 条历史操作，0 条拒绝，全部为终态。临时隔离 API Service 入口，将 API 缩至 0，等待两个旧 Pod 删除后才切换镜像并恢复 2 副本。前端探针会转发到 API；维护入口最初恢复偏晚，前端出现 502 并重启 2 次，在确认两个新版 API Ready 后恢复入口，前端随即 Ready，流水线最终成功。维护路由及一次性 Pipeline 定义均已还原；仓库默认 Pipeline 的普通滚动发布不能代替这一格式迁移步骤。
+
+最终 API `2/2` 分布于 `xjw`、`xxt`，前端 `1/1`；两台节点 `:30882/healthz` 和 `/readyz` 均为 200。状态与 OperationStore 为 Kubernetes，元数据继续使用原 PostgreSQL Secret；本轮没有切换 PostgreSQL OperationStore。
+
+### 操作与外部证据
+
+验收作业 `zio-e2e-20261016-0634ed`，使用 Pipeline #48 的 StatefulCounterJob 镜像和独立前缀 `s3://flink-savepoints/zio-e2e-20261016-0634ed/`。
+
+| 场景 | operationId | 最终状态 |
+| --- | --- | --- |
+| 提交有状态作业 | `a4b4a532-60bd-3258-a182-fa2cee5b83c1` | `COMPLETED` |
+| 手动 checkpoint | `469cff4b-aeef-345a-8714-5f08bb7acf25` | `COMPLETED` |
+| 手动 savepoint | `6053e0a7-e391-3ed9-9fcc-dbc1c54c57d6` | `COMPLETED` |
+| 严格升级 + 删除一个 API Pod | `7d2a042e-6920-3539-99bf-3aa5a1ec781d` | `COMPLETED` |
+| savepoint 暂停 | `5863132a-029b-34c3-bde6-c5b032c272df` | `COMPLETED` |
+| 恢复运行 | `1d4ffa27-4113-3b2e-9a4e-fa69649e01bb` | `COMPLETED` |
+| 过期锁接管 + 严格重启 | `44636377-1791-3517-9ca9-6fb312f9ab24` | `COMPLETED` |
+| 指定 savepoint 恢复 | `129ec28b-ebea-39c5-9429-329d60bab0b6` | `COMPLETED` |
+| 删除测试作业 | `fbc05582-7364-3c34-b986-f8edc496d8e7` | `COMPLETED` |
+
+- 自动 checkpoint、手动 checkpoint/savepoint、升级后、暂停恢复后、重启后及指定恢复后的 checkpoint `_metadata` 均完成 RustFS HEAD 200 检查。严格升级将并行度 1 改为 2；升级与重启的审计 savepoint 路径均等于 Flink REST `latest.restored.external_path`，没有 fallback 事件。
+- 升级仍为 `VERIFYING` 时删除 `xjw` 上一个 API Pod，同一 operation 后续完成，替代 Pod 就绪。该证据未识别被删 Pod 是否持有租约，不推断为整机故障或锁持有者接管证明。
+- 按源码的单数资源键创建过期锁 `flink-lock-d1a31114a25fdd0b`；UID 从 `3e562d8b-e4ed-40a4-939e-c150846d8775` 变为 `1161ebc0-e126-480b-b558-e90173870913`，新锁绑定本次重启 operation，并更新未来租期，重启最终完成。
+- Resume 等待到实际 RUNNING，恢复后继续产生 checkpoint。指定 savepoint 恢复时，Flink REST 的恢复路径等于请求路径，保存前计数为 `6105`，新建 TaskManager 中捕获的最小计数为 `6329`；恢复布尔参数 `allowNonRestoredState=false` 保留在版本 1 的操作记录中。这只证明示例 keyed ValueState 连续，不证明业务源位点或端到端 exactly-once。
+- 直连两个不同节点的 API Pod，读取到完全一致的恢复 operation；在另一节点重试相同 requestId 仍返回原 operationId，未增加操作记录。8 条执行记录及随后删除记录均使用 `schemaVersion: 1`，9 条最终全部完成。
+
+### 清理与边界
+
+先将本轮 savepoint Snapshot 的 `disposeOnDelete` 设为 false 并删除所有测试 Snapshot，再通过 HTTP 删除作业，避免文件销毁 finalizer 依赖已停止的 Job。随后删除本轮 9 条操作记录，清空 RustFS 独立前缀剩余 26 个对象。复查本轮 Deployment、SessionJob、Snapshot、Lock、Pod、Service、ReplicaSet、ConfigMap 和对象存储前缀均无残留，Jenkins 临时 agent 也已退出。原有 18 条历史操作的 UID 和完整审计内容与部署前一致。结果文件的 HEAD 200 是清理前证据，路径已不再保留用于恢复。
+
+本轮没有修改 CRD 或业务源码，没有整机故障、生产容量压测、多小时稳定性测试，也没有重跑 PostgreSQL OperationStore 跨节点部署。普通 HTTP 取消与关闭顺序由本节前述 TCP 契约测试证明，不能把本次过期锁接管外推为 API Server 撤销已接收写入的证明。
+
+## 上一发布真实验收（2026-10-16，Pipeline #47）
 
 发布代码为 `9804df5`。PipelineRun `zio-flink-operator-lab-nlkcj`（Jenkins `#47`）为 `Succeeded` / `Finished: SUCCESS`，包含 175 个本地测试、assembly、镜像构建推送、前后端 rollout，以及部署后 4/4 HTTP E2E；独立 PostgreSQL 契约的两项仍按环境开关跳过。API/UI 镜像标签为 `build-47-9804df52f67f`。
 

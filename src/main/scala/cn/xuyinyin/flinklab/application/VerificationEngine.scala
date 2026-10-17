@@ -116,6 +116,10 @@ object DefaultVerificationEngine extends VerificationEngine:
       Left(ControlPlaneError.VerificationFailed("observedGeneration does not match generation"))
     else
       operation match
+        case FlinkOperation.Deploy(spec) if spec.requestsSavepointRestore =>
+          restore(spec, evidence)
+        case FlinkOperation.Upgrade(_, spec, _) if spec.requestsSavepointRestore =>
+          restore(spec, evidence)
         case FlinkOperation.Suspend(_, policy) =>
           for
             _ <- if policy == SuspendPolicy.KeepState then protection(UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden), evidence) else Right(())
@@ -140,6 +144,30 @@ object DefaultVerificationEngine extends VerificationEngine:
           Left(ControlPlaneError.VerificationFailed("delete requires confirmation that the target resource is absent"))
         case _ =>
           ready(evidence, s"job is ${evidence.jobState} and reconciled")
+
+  /** 恢复验证使用持久化的原始 path/nonce，重启后也不把普通 READY 当成恢复完成。 */
+  private def restore(spec: FlinkDeploymentSpec, evidence: Evidence): Either[ControlPlaneError, VerificationResult] =
+    val reconciled = for
+      parsed <- scala.util.Try(ujson.read(evidence.raw)).toOption
+      status <- parsed.obj.get("status").flatMap(_.objOpt)
+      reconciliation <- status.get("reconciliationStatus").flatMap(_.objOpt)
+      raw <- reconciliation.get("lastReconciledSpec").flatMap(_.strOpt)
+      value <- scala.util.Try(ujson.read(raw)).toOption
+      current <- value.obj.get("spec").flatMap(_.objOpt)
+      job <- current.get("job").flatMap(_.objOpt)
+    yield (current, job)
+    val matches = reconciled.exists { (current, job) =>
+      val nonce = job.get("savepointRedeployNonce").flatMap(value => scala.util.Try(BigDecimal(value.strOpt.getOrElse(value.num.toString)).bigDecimal.longValueExact()).toOption)
+      val path = job.get("initialSavepointPath").flatMap(_.strOpt)
+      val mode = job.get("upgradeMode").flatMap(_.strOpt)
+      val fallback = current.get("flinkConfiguration").flatMap(_.objOpt).flatMap(_.get("kubernetes.operator.job.upgrade.last-state-fallback.enabled"))
+      spec.job.stateProtection == StateProtection.Savepoint && spec.job.desiredState == DesiredJobState.Running &&
+        spec.job.initialSavepointPath.exists(value => path.contains(value.snapshotPathValue)) &&
+        spec.job.savepointRedeployNonce.nonEmpty && nonce == spec.job.savepointRedeployNonce && mode.contains("savepoint") &&
+        fallback.exists(value => value.strOpt.contains("false") || value.boolOpt.contains(false))
+    }
+    if matches then ready(evidence, "explicit savepoint path and redeploy nonce are reconciled")
+    else Left(ControlPlaneError.VerificationFailed("explicit restore path, redeploy nonce or forbidden fallback is not reconciled"))
 
   private def protection(policy: UpgradePolicy, evidence: Evidence): Either[ControlPlaneError, Unit] =
     evidence.actualProtection match

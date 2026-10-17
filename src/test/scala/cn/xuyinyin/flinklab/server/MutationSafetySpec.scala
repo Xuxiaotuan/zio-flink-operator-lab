@@ -33,17 +33,22 @@ object MutationSafetySpec extends ZIOSpecDefault:
 
   def spec = suite("mutation safety")(
     test("production HTTP deployment dry-run never queues an operation") {
-      check(ApiRequest("POST", "/v1/deployments", Map("dryRun" -> "true"), body)).map { (response, calls, operations) =>
-        assertTrue(response.status == 200, !calls.contains("submit"), calls.size == 1, calls.headOption.exists(_.startsWith("apply:true:")), operations.isEmpty)
-      }
+      ZIO.foreach(List("true", "TRUE", " true ", "\ttrue\t")) { input =>
+        check(ApiRequest("POST", "/v1/deployments", Map("dryRun" -> input), body))
+      }.map(results => assertTrue(results.forall { (response, calls, operations) =>
+        response.status == 200 && !calls.contains("submit") && calls.size == 1 && calls.head.startsWith("apply:true:") && operations.isEmpty
+      }))
     },
     test("production HTTP snapshot dry-run never queues an operation") {
-      check(ApiRequest("POST", "/v1/snapshots", Map("dryRun" -> "true"), """{"targetKind":"deployment","targetName":"orders","snapshotName":"orders-sp","type":"savepoint"}""")).map { (response, calls, operations) =>
-        assertTrue(response.status == 200, !calls.contains("submit"), calls.headOption.exists(_.startsWith("apply:true:")), operations.isEmpty)
-      }
+      ZIO.foreach(List("true", "TRUE", " true ", "\ttrue\t")) { input =>
+        check(ApiRequest("POST", "/v1/snapshots", Map("dryRun" -> input), """{"targetKind":"deployment","targetName":"orders","snapshotName":"orders-sp","type":"savepoint"}"""))
+      }.map(results => assertTrue(results.forall { (response, calls, operations) =>
+        response.status == 200 && !calls.contains("submit") && calls.headOption.exists(_.startsWith("apply:true:")) && operations.isEmpty
+      }))
     },
     test("unsupported dry-run mutations fail before any side effect") {
       val requests = List(
+        ApiRequest("DELETE", "/v1/deployments", body = body), ApiRequest("PUT", "/v1/deployments", body = body),
         ApiRequest("DELETE", "/v1/deployments/orders"), ApiRequest("DELETE", "/v1/snapshots/orders-sp"),
         ApiRequest("POST", "/v1/deployments/orders/restart"), ApiRequest("POST", "/v1/deployments/orders/resume"),
         ApiRequest("POST", "/v1/deployments/orders/suspend-savepoint"), ApiRequest("POST", "/v1/deployments/orders/savepoint"),
@@ -52,7 +57,9 @@ object MutationSafetySpec extends ZIOSpecDefault:
       ZIO.foreach(requests)(check).map(results => assertTrue(results.forall { (response, calls, _) => response.status == 400 && calls.isEmpty }))
     },
     test("a misspelled dry-run value is rejected instead of executing") {
-      check(ApiRequest("POST", "/v1/deployments", Map("dryRun" -> "treu"), body)).map { (response, calls, _) => assertTrue(response.status == 400, calls.isEmpty) }
+      ZIO.foreach(List("treu", "", " ", "1", "preview")) { input =>
+        check(ApiRequest("POST", "/v1/deployments", Map("dryRun" -> input), body))
+      }.map(results => assertTrue(results.forall { (response, calls, _) => response.status == 400 && calls.isEmpty }))
     },
     test("HTTP parsing preserves job protection, state and checkpoint configuration") {
       val result = FlinkOperationFactory.fromDeploymentJson("analytics", body).map {

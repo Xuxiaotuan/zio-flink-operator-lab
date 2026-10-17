@@ -118,6 +118,7 @@ final class DefaultAsyncOperationWorker(
         observedState(evidence.resource, evidence)
       }
       validated <- policy.validate(current.command, observed)
+      _ <- validateRestoreNonce(current.command, observation)
       _ <- validateMutationIdentity(current, observed)
       _ <- ZIO.fail(ControlPlaneError.InvalidPolicy("observed mutation target resourceVersion is required")).when(observation.exists(_.resourceVersion.isEmpty))
       _ <- transition(id, OperationEvent.ValidationPassed(Instant.now()))
@@ -180,6 +181,27 @@ final class DefaultAsyncOperationWorker(
       _ <- ZIO.fail(ControlPlaneError.InvalidPolicy("observed mutation target UID is required")).when(observed.exists(_.resource.uid.isEmpty))
       _ <- ZIO.fail(ControlPlaneError.InvalidPolicy("operation target UID does not match the observed resource")).when(operation.resource.uid.nonEmpty && observed.exists(_.resource.uid != operation.resource.uid))
     yield ()
+
+  /** 已有目标必须提高 nonce；否则 Operator 可能只更新声明而不执行新的指定恢复。 */
+  private def validateRestoreNonce(command: FlinkOperation, observation: Option[cn.xuyinyin.flinklab.operator.observer.ResourceObservation]): IO[ControlPlaneError, Unit] =
+    val spec = command match
+      case FlinkOperation.Deploy(value) => Some(value)
+      case FlinkOperation.Upgrade(_, value, _) => Some(value)
+      case _ => None
+    spec.filter(_.requestsSavepointRestore) match
+      case None => ZIO.unit
+      case Some(value) =>
+        val previous = observation.flatMap { current =>
+          scala.util.Try(ujson.read(current.payload)).toOption.flatMap(_.obj.get("spec").flatMap(_.objOpt))
+            .flatMap(_.get("job").flatMap(_.objOpt)).flatMap(_.get("savepointRedeployNonce"))
+        }
+        ZIO.fromEither(previous.map { raw =>
+          scala.util.Try(BigDecimal(raw.strOpt.getOrElse(raw.num.toString)).bigDecimal.longValueExact()).toEither
+            .left.map(_ => ControlPlaneError.InvalidPolicy("existing savepointRedeployNonce is invalid"))
+        }.getOrElse(Right(0L))).flatMap { nonce =>
+          ZIO.fail(ControlPlaneError.InvalidPolicy("savepointRedeployNonce must increase for an existing target"))
+            .when(observation.nonEmpty && !value.job.savepointRedeployNonce.exists(_ > nonce)).unit
+        }
 
   private def ensureSubmittedIdentity(operation: FlinkOperation, target: ResourceRef, generation: Option[Generation]): IO[ControlPlaneError, Unit] =
     val needsGeneration = operation match

@@ -13,6 +13,21 @@ object VerificationEngineSpec extends ZIOSpecDefault:
   private val ref = ResourceRef(namespace, ResourceKind.Deployment, name)
 
   def spec = suite("verification engine")(
+    test("explicit restore requires the reconciled savepoint path and redeploy nonce") {
+      val path = SnapshotPath.from("s3://snapshots/requested").toOption
+      val spec = FlinkDeploymentSpec(namespace, name, "flink:1.20.1", "v1_20", FlinkJob(JobJarUri.unsafe("local:///job.jar"), "example.Job", 1, StateProtection.Savepoint, initialSavepointPath = path, savepointRedeployNonce = Some(5L)))
+      def evidence(reconciledPath: String, nonce: Int) =
+        val payload = ujson.Obj("kind" -> "FlinkDeployment", "metadata" -> ujson.Obj("name" -> "orders"), "status" -> ujson.Obj(
+          "jobStatus" -> ujson.Obj("state" -> "RUNNING"), "reconciliationStatus" -> ujson.Obj("state" -> "DEPLOYED", "lastReconciledSpec" -> ujson.Obj("spec" -> ujson.Obj(
+            "job" -> ujson.Obj("upgradeMode" -> "savepoint", "state" -> "running", "initialSavepointPath" -> reconciledPath, "savepointRedeployNonce" -> nonce),
+            "flinkConfiguration" -> ujson.Obj("kubernetes.operator.job.upgrade.last-state-fallback.enabled" -> "false"))).render())))
+        Evidence.fromObservation(namespace, ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), payload.render()))
+      assertTrue(
+        DefaultVerificationEngine.verify(FlinkOperation.Deploy(spec), ref, evidence("s3://snapshots/requested", 5), Generation.from(3).toOption).isRight,
+        DefaultVerificationEngine.verify(FlinkOperation.Deploy(spec), ref, evidence("s3://snapshots/other", 5), Generation.from(3).toOption).isLeft,
+        DefaultVerificationEngine.verify(FlinkOperation.Deploy(spec), ref, evidence("s3://snapshots/requested", 4), Generation.from(3).toOption).isLeft
+      )
+    },
     test("requires protection evidence for strict savepoint restart") {
       val operation = FlinkOperation.Restart(ref, UpgradePolicy(StateProtection.Savepoint, FallbackPolicy.Forbidden))
       val observation = ResourceObservation(WatchEventType.Modified, ResourceKind.Deployment, "orders", Some("9"), Some("uid"), Some(3), Some(3), """{"kind":"FlinkDeployment","metadata":{"name":"orders","resourceVersion":"9","uid":"uid","generation":3},"status":{"jobStatus":{"state":"RUNNING"},"reconciliationStatus":{"state":"DEPLOYED"},"observedGeneration":3}}""")

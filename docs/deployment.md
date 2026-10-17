@@ -68,17 +68,17 @@ open http://<任一节点>:30882/
 
 两个 API 副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态和 operation 生命周期默认都来自 Kubernetes CR；每个副本都会轮询，因此状态轮询流量随 API 副本数线性增加。`FlinkOperationLock` CR 按目标资源提供跨副本互斥。设置 `ZIO_FLINK_OPERATION_STORE=postgres` 后，只有 operation 审计切换到 PostgreSQL，Flink 资源状态仍来自 Kubernetes。前端只通过 API Service 访问后端，不参与状态协调。
 
-最近一次已记录的目标发布为 2026-10-16 Pipeline `#47`、代码 `9804df5`，API/UI 标签均为 `build-47-9804df52f67f`；实际操作和清理结果见 [最新真实验收](testing.md#最新真实验收2026-10-16)。当前单副本前端采用先停后启的滚动策略，发布期间会短暂不可用；客户端恢复连接后继续查询原 operationId。
+最近一次已记录的目标发布为 2026-10-16 Pipeline `#48`、代码 `65397d9`，API/UI 标签均为 `build-48-65397d98a2d6`；实际操作和清理结果见 [最新真实验收](testing.md#最新真实验收2026-10-16)。当前单副本前端采用先停后启的滚动策略，发布期间会短暂不可用；客户端恢复连接后继续查询原 operationId。
 
 Flink 冷启动和 TaskManager 调度可能超过短轮询窗口，worker 的提交、删除和验证超时由 `ZIO_FLINK_VERIFICATION_TIMEOUT_SECONDS` 控制，默认 180 秒；现场集群可以按镜像拉取和调度时延调整。
 
 ## 持久化格式升级
 
-第一阶段可靠性修复写入 `schemaVersion: 1`，规则见 [持久化与恢复约束](design.md#操作持久化与恢复约束)。这轮代码验证不代表目标集群已经升级，已有 Pipeline #47 证据只属于代码 `9804df5`。
+第一阶段可靠性修复写入 `schemaVersion: 1`，规则见 [持久化与恢复约束](design.md#操作持久化与恢复约束)。该格式已随 Pipeline #48 部署并完成真实验收；Pipeline #47 的证据仍只属于旧代码 `9804df5`。
 
 升级前备份 FlinkOperation CR 或 PostgreSQL operation 表，并检查历史记录可解码。坏记录会使读取或扫描失败，应保留原始 JSON，依据请求与外部执行证据修复；不要批量删除审计记录或改成 COMPLETED。
 
-旧 worker 不识别新策略字段，因此本次切换需要维护窗口：停止接收变更，等待活动操作结束，将全部 API 副本缩为 0，统一更新镜像后再恢复 2 个副本并检查 readiness。期间 HTTP 不可用；前端无需改变副本数。不要直接按普通滚动发布让新旧 worker 混跑。回滚前也要停止写入，并核对新记录是否包含旧代码无法表达的策略；仅回退镜像不能保证旧 worker 正确解释新意图。
+旧 worker 不识别新策略字段，因此本次切换需要维护窗口：停止接收变更，等待活动操作结束，将全部 API 副本缩为 0，统一更新镜像后再恢复 2 个副本并检查 readiness。若临时隔离了 API Service，必须在两个新版 API Ready 后恢复转发，再等待前端 rollout；前端健康探针依赖 API，隔离入口时会返回 502。期间 HTTP 不可用，前端无需改变副本数。本次使用的一次性 Pipeline 维护步骤已恢复为原定义，仓库默认流水线仍是普通滚动发布。不要直接按普通滚动发布让新旧 worker 混跑。回滚前也要停止写入，并核对新记录是否包含旧代码无法表达的策略；仅回退镜像不能保证旧 worker 正确解释新意图。
 
 ## 执行边界与健康检查
 
@@ -110,7 +110,7 @@ s3://flink-savepoints/zio-flink-operator/local/orbstack/flink-lineage-test/
 
 控制面只把 `state.savepoints.dir` 写入 FlinkDeployment；Flink 运行时 Pod 负责实际写入对象。Flink Pod 还需要可达的 S3 endpoint、文件系统插件和 Kubernetes Secret 中的凭据。凭据不能写入 Git、镜像、CR JSON 或日志。
 
-对已存在的 Deployment 触发 savepoint 重部署时，提交的 `FlinkDeployment.spec.job` 必须同时包含 `upgradeMode: "savepoint"`、`initialSavepointPath` 和递增的正整数 `savepointRedeployNonce`。只修改 `initialSavepointPath` 不会触发 Flink Operator 的完整 savepoint 重部署；nonce 每次新的恢复操作都必须变化（同一 requestId 重试保持不变），并且由控制面保留在 Operation 审计 JSON 中。
+普通 Deploy 现在只创建目标，已有资源必须走 Upgrade；指定 savepoint 重部署仍可走 `POST /v1/deployments`。提交的 `FlinkDeployment.spec.job` 必须同时包含 `upgradeMode: "savepoint"`、`state: "running"`、`initialSavepointPath` 和递增的正整数 `savepointRedeployNonce`（不超过 `9007199254740991`）。只修改 `initialSavepointPath` 不会触发 Flink Operator 的完整 savepoint 重部署；nonce 每次新的恢复操作都必须变化（同一 requestId 重试保持不变），并且由控制面保留在 Operation 审计 JSON 中。
 
 示例：
 

@@ -70,7 +70,8 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         api <- ZIO.succeed(new KubernetesApi:
           override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"resourceVersion":"8","generation":3,"uid":"uid"}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
+          // 创建用例先观察到不存在；已有目标的普通 Deploy 由 RestoreSafetySpec 验证拒绝。
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(404, "not found"))
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
@@ -112,7 +113,8 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         api <- ZIO.succeed(new KubernetesApi:
           override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.succeed("""{"metadata":{"generation":1,"resourceVersion":"2","uid":"uid"}}""")
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
+          // 创建用例先观察到不存在；已有目标的普通 Deploy 由 RestoreSafetySpec 验证拒绝。
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(404, "not found"))
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )
@@ -247,7 +249,8 @@ object AsyncOperationWorkerSpec extends ZIOSpecDefault:
         api <- ZIO.succeed(new KubernetesApi:
           override def create(namespace: Namespace, resource: String) = apply(namespace, resource, dryRun = false)
           def apply(namespace: Namespace, resource: String, dryRun: Boolean) = ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(403, "forbidden"))
-          def get(namespace: Namespace, kind: ResourceKind, name: String) = pointGet(kind)
+          // 创建用例先观察到不存在；已有目标的普通 Deploy 由 RestoreSafetySpec 验证拒绝。
+          def get(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.fail(cn.xuyinyin.flinklab.kubernetes.KubernetesApiError(404, "not found"))
           def delete(namespace: Namespace, kind: ResourceKind, name: String) = ZIO.succeed("")
           def patch(namespace: Namespace, kind: ResourceKind, name: String, patch: String) = apply(namespace, patch, dryRun = false)
         )

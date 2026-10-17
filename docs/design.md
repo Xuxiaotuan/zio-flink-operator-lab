@@ -52,13 +52,21 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 `FlinkOperationFactory` 把 HTTP 写请求转换成同一个 `FlinkOperation`。`PolicyEngine` 负责升级策略校验；`AsyncOperationWorker` 负责状态推进、Kubernetes 提交、观察和验证。`OperationStore` 默认使用 Kubernetes `FlinkOperation` CR，`ZIO_FLINK_OPERATION_STORE=postgres` 时才使用 PostgreSQL，`memory` 只用于单进程测试。Kubernetes 适配器仍是唯一提交边界。
 
-新资源用 POST 创建，名称已存在时由 API Server 明确拒绝；已有资源的变更使用带 UID/resourceVersion 的 merge patch，版本发生变化时返回冲突，禁止覆盖并发修改。merge patch 保留请求中未列出的字段，不使用强制字段接管。
+普通 Deploy 只创建资源：观察到目标已存在时在写入前拒绝；观察后发生名称竞争时，由 API Server 的 POST 409 拒绝。已有资源的普通变更必须走 Upgrade，统一执行运行状态、状态保护、fallback 规范化和保护证据校验。Upgrade 与显式恢复使用带 UID/resourceVersion 的 merge patch，版本变化时返回冲突；不使用强制字段接管。
 
 请求接受和操作完成是两个结果。HTTP 写请求先返回 `AcceptedOperation`，worker 随后推进 `Accepted → Validating → Submitted → WaitingForObservation → Reconciling → Verifying → Completed`。PolicyEngine 不通过时不会写 Kubernetes。验证会持续观察，只有 `Evidence` 同时满足资源身份、UID、提交后的 generation、observedGeneration、reconciliation 和实际 Job 状态时才进入 `Completed`；确定失败进入 `Failed`，等待超时进入 `TimedOut`，提交请求结果不确定进入 `Uncertain`。
 
 严格 savepoint 策略的语义是：`StateProtection.Savepoint` 只有在 Evidence 明确包含 savepoint 保护和结果路径时才完成；Operator 的 `lastReconciledSpec` 缺失或显式表现为非 savepoint 时拒绝。`AllowLastState` 只允许明确观察到 `last-state` 的结果，并追加 `FALLBACK_DETECTED` 审计事件，不把未知证据当作 fallback。网络中断使用 `Uncertain`，被新操作覆盖使用 `Superseded`，超时使用 `TimedOut`。
 
 暂停还需区分 Flink Job 状态和 Operator 生命周期：savepoint 停止的 Job 可能为 `FINISHED`。只有 `lifecycleState=SUSPENDED` 且 `lastReconciledSpec.spec.job.state=suspended` 时才归一为暂停；严格暂停仍须通过 generation、reconciliation 和 savepoint 证据校验。
+
+## 预览与指定恢复
+
+`dryRun` 只在 HTTP 边界解析一次，大小写及首尾 ASCII 空白均接受；非法值返回 400。预览只支持 POST deployment/snapshot apply，向底层明确传 `dryRun=true`，不创建 operation、不排队、不产生实际 CR。适配器负责发送 Kubernetes `dryRun=All`。
+
+已有目标仍可通过 `POST /v1/deployments` 指定 savepoint 恢复，必须同时声明 `initialSavepointPath`、正的安全整数 `savepointRedeployNonce`、`upgradeMode=savepoint` 和 `state=running`。任一恢复字段出现就按恢复校验，字段缺失不能退回普通 Deploy。已有目标的 nonce 必须大于当前 CR 中的 nonce；相同 requestId 重试复用原 operation，不提高 nonce。只做普通 Upgrade 时应移除旧恢复字段，避免把复制的 CR 当成一次新的恢复请求。
+
+恢复提交强制禁止 last-state fallback；Verifier 和重启后的 worker 从同一持久化命令读取 path/nonce，要求匹配 Operator `lastReconciledSpec` 中的路径、nonce、savepoint 模式和禁止 fallback 配置，再结合 UID/generation/READY/Job 状态完成验证。目标为暂停状态时也允许显式恢复。CR 证据证明 Operator 已协调该声明；文件可读和示例 keyed state 连续仍需 Flink/RustFS 现场验收，不能由 READY 单独推断。
 
 ## 操作持久化与恢复约束
 
@@ -70,7 +78,7 @@ FlinkDeployment / FlinkSessionJob / FlinkStateSnapshot
 
 Resume 必须观察到对应 UID、提交 generation/observedGeneration 的 `RUNNING + READY`。旧作业 `FINISHED` 不算恢复成功；若有界作业在观察到 RUNNING 前已经结束，当前会继续观察并超时，不用 FINISHED 猜测本次恢复结果。Deploy 对自然结束的 `FINISHED + READY` 仍维持原有判据。
 
-Kubernetes 普通 HTTP 请求将 ZIO 中断传给对应 OkHttp `Call.cancel()`，响应体读取在 `finally` 中关闭。续租失败会先发出本地取消再释放锁；取消无法撤销已经到达 API Server 的写入，因此仍依赖 UID/resourceVersion 前置条件、确定名称创建和未知写入结果不重放。持久化 `ValidationPassed` 后没有提交回执时，恢复仍进入 `Uncertain`，不会重复提交。
+Kubernetes 普通 HTTP 请求将 ZIO 中断传给对应 OkHttp `Call.cancel()`，响应体读取在 `finally` 中关闭。Watch 在等待响应头之前登记 Call 的关闭责任，建连和等事件均显式可取消；Scope 结束会取消 Call 并关闭 Watch，取消后迟到的 Watch 也会关闭。续租失败会先发出本地取消再释放锁；取消无法撤销已经到达 API Server 的写入，因此仍依赖 UID/resourceVersion 前置条件、确定名称创建和未知写入结果不重放。持久化 `ValidationPassed` 后没有提交回执时，恢复仍进入 `Uncertain`，不会重复提交。
 
 ## 当前实现边界
 
@@ -90,7 +98,7 @@ Kubernetes 普通 HTTP 请求将 ZIO 中断传给对应 OkHttp `Call.cancel()`�
 
 所有资源都通过 Kubernetes API Server 提交。程序不调用 `kubectl`，不直接操作 JobManager Pod。
 
-HTTP 部署请求使用 Server-Side Apply；typed checkpoint/savepoint operation 使用确定名称创建 `FlinkStateSnapshot`，随后只观察这一个 Snapshot CR。Operator 记录请求、结果路径和失败信息。
+普通 Deploy 使用 POST 创建，Upgrade 与显式恢复使用 UID/resourceVersion 约束的 merge patch；仅预览通过 Server-Side Apply 加 `dryRun=All` 返回资源。typed checkpoint/savepoint operation 使用确定名称创建 `FlinkStateSnapshot`，随后只观察这一个 Snapshot CR。Operator 记录请求、结果路径和失败信息。
 
 ## 状态来源
 

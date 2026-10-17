@@ -9,7 +9,8 @@ import com.google.gson.reflect.TypeToken
 import io.kubernetes.client.openapi.{ApiClient, JSON, Pair}
 import io.kubernetes.client.openapi.apis.CustomObjectsApi
 import io.kubernetes.client.util.{Config, Watch}
-import okhttp3.{MediaType, RequestBody}
+import okhttp3.{Call, MediaType, RequestBody}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import zio.*
 import zio.stream.*
 
@@ -123,37 +124,44 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
       contentType = "application/merge-patch+json"
     )
 
-  /** 将 Java Watch 转成受 Scope 管理的 ZStream，流结束时关闭底层连接。 */
+  /** 先登记 Call 的关闭责任，再进行可取消的建连；响应头迟迟不返回时也能退出 Scope。 */
   override def watchFrom(namespace: Namespace, kind: ResourceKind, name: Option[String], resourceVersion: Option[String]): ZStream[Any, Throwable, WatchEvent] =
     ZStream.unwrapScoped {
-      ZIO.acquireRelease(
-        ZIO.attemptBlocking {
-          val client = apiClient
-          val customObjects = new CustomObjectsApi(client)
-          val builder = customObjects
-            .listNamespacedCustomObject(
-              settings.group,
-              settings.version,
-              namespace.namespaceValue,
-              apiResource(kind)
-            )
-          name.foreach(value => builder.fieldSelector(s"metadata.name=$value"))
-          resourceVersion.foreach(value => builder.resourceVersion(value))
-          // allowWatchBookmarks 让服务能收到游标进展，但 bookmark 不会进入业务状态。
-          val call = builder.allowWatchBookmarks(true).watch(true).buildCall(null)
-          val responseType = new TypeToken[Watch.Response[Object]]() {}.getType
-          (client, Watch.createWatch[Object](client, call, responseType))
-        }
-      ) { case (_, watch) => ZIO.attemptBlocking(watch.close()).ignore }
-        .map { case (_, watch) =>
-          ZStream.repeatZIOOption(nextEvent(watch))
-        }
+      ZIO.acquireRelease(ZIO.attempt {
+        val customObjects = new CustomObjectsApi(apiClient)
+        val builder = customObjects.listNamespacedCustomObject(settings.group, settings.version, namespace.namespaceValue, apiResource(kind))
+        name.foreach(value => builder.fieldSelector(s"metadata.name=$value"))
+        resourceVersion.foreach(value => builder.resourceVersion(value))
+        val call = builder.allowWatchBookmarks(true).watch(true).buildCall(null)
+        new WatchConnection(call)
+      })(connection => ZIO.attemptBlocking(connection.close()).ignore).flatMap { connection =>
+        ZIO.attemptBlockingCancelable(connection.open())(ZIO.attemptBlocking(connection.close()).ignore)
+          .map(watch => ZStream.repeatZIOOption(nextEvent(watch, connection)))
+      }
     }
 
-  private def nextEvent(watch: Watch[Object]): ZIO[Any, Option[Throwable], WatchEvent] =
-    ZIO.attemptBlocking {
+  /** 处理“取消先到、Watch 后返回”的竞态；迟到的响应也必须关闭，不能遗漏在 Scope 外。 */
+  private final class WatchConnection(call: Call):
+    private val closed = new AtomicBoolean(false)
+    private val current = new AtomicReference[Watch[Object]]()
+    def open(): Watch[Object] =
+      val responseType = new TypeToken[Watch.Response[Object]]() {}.getType
+      val watch = Watch.createWatch[Object](apiClient, call, responseType)
+      current.set(watch)
+      if closed.get() then
+        watch.close()
+        throw new java.io.IOException("watch was closed during connection establishment")
+      watch
+    def close(): Unit =
+      closed.set(true)
+      // 必须先 cancel 解开 socket 阻塞，再关闭响应体；close 允许与迟到的 open 重复调用。
+      call.cancel()
+      Option(current.get()).foreach(_.close())
+
+  private def nextEvent(watch: Watch[Object], connection: WatchConnection): ZIO[Any, Option[Throwable], WatchEvent] =
+    ZIO.attemptBlockingCancelable {
       if watch.hasNext then Some(watch.next()) else None
-    }.mapError(Some(_)).flatMap {
+    }(ZIO.attemptBlocking(connection.close()).ignore).mapError(Some(_)).flatMap {
       case None => ZIO.fail(None)
       case Some(response) =>
         val objectJson =
@@ -163,8 +171,7 @@ final class KubernetesApiLive(settings: KubernetesApiSettings, suppliedClient: =
         ZIO.fromEither(WatchEvent.fromJson(ujson.Obj("type" -> response.`type`, "object" -> ujson.read(objectJson))))
           .mapError(message => Some(IllegalArgumentException(message)))
           .flatMap {
-            case event if event.eventType == WatchEventType.Error =>
-              ZIO.fail(Some(watchError(event)))
+            case event if event.eventType == WatchEventType.Error => ZIO.fail(Some(watchError(event)))
             case event => ZIO.succeed(event)
           }
     }

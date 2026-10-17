@@ -78,14 +78,23 @@ object KubernetesHttpApi:
         // JDBC 取消可能等待驱动返回；断开等待，让探针按时响应，底层连接仍受 socket/statement 超时约束。
         .disconnect.timeout(3.seconds)
         .map(_.getOrElse(ApiResponse(503, errorJson("readiness check timed out"))))
-    else request.query.get("dryRun").map(_.trim.toLowerCase) match
-      case Some("true") =>
-        request.path.split('/').toList.filter(_.nonEmpty) match
-          case "v1" :: "deployments" :: Nil => applyDeployment(request, settings)
-          case "v1" :: "snapshots" :: Nil => createSnapshot(request, settings)
-          case _ => ZIO.fail(IllegalArgumentException("dryRun is only supported for deployment and snapshot apply requests"))
-      case Some("false") | None => routeWithWorkerMutation(request, settings, worker, operationStore, metadataStore)
-      case Some(value) => ZIO.fail(IllegalArgumentException(s"dryRun must be true or false, got: $value"))
+    else ZIO.fromEither(previewMode(request)).flatMap {
+      case true => preview(request, settings)
+      case false => routeWithWorkerMutation(request, settings, worker, operationStore, metadataStore)
+    }
+
+  /** dry-run 只在 HTTP 边界解释一次；预览分支向底层传常量 true，禁止重新读原始字符串。 */
+  private def previewMode(request: ApiRequest): Either[Throwable, Boolean] =
+    request.query.get("dryRun").map(_.trim.toLowerCase(java.util.Locale.ROOT)) match
+      case Some("true") => Right(true)
+      case Some("false") | None => Right(false)
+      case Some(value) => Left(IllegalArgumentException(s"dryRun must be true or false, got: $value"))
+
+  private def preview(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+    (request.method.toUpperCase(java.util.Locale.ROOT), request.path.split('/').toList.filter(_.nonEmpty)) match
+      case ("POST", "v1" :: "deployments" :: Nil) => applyDeployment(request, settings, dryRun = true)
+      case ("POST", "v1" :: "snapshots" :: Nil) => createSnapshot(request, settings, dryRun = true)
+      case _ => ZIO.fail(IllegalArgumentException("dryRun is only supported for POST deployment and snapshot apply requests"))
 
   // 所有 HTTP 变更在这里先解析成 FlinkOperation，再交给同一个 worker。
   private def routeWithWorkerMutation(request: ApiRequest, settings: KubernetesHttpSettings, worker: AsyncOperationWorker, operationStore: Option[OperationStore], metadataStore: Option[MetadataStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
@@ -166,7 +175,7 @@ object KubernetesHttpApi:
               operationId <- ZIO.fromEither(cn.xuyinyin.flinklab.domain.OperationId.from(id).left.map(IllegalArgumentException(_)))
               operation <- store.get(operationId).mapError(error => readable(error))
             yield operation.map(value => ok(value.json.render())).getOrElse(ApiResponse(404, errorJson("operation not found")))
-      case _ => route(request, settings, metadataStore)
+      case _ => routeDirect(request, settings, metadataStore)
 
   // 没有显式 requestId 时生成一次性幂等键；客户端重试应主动复用 requestId。
   private def requestId(request: ApiRequest): RequestId = RequestId.from(request.query.getOrElse("requestId", java.util.UUID.randomUUID().toString)).fold(_ => RequestId.generate(), identity)
@@ -176,6 +185,12 @@ object KubernetesHttpApi:
 
   /** 查询、dry-run 和兼容的直接 CR 路由。真正变更请求由上面的 worker 路由优先处理。 */
   private def route(request: ApiRequest, settings: KubernetesHttpSettings, metadataStore: Option[MetadataStore] = None): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+    ZIO.fromEither(previewMode(request)).flatMap {
+      case true => preview(request, settings)
+      case false => routeDirect(request, settings, metadataStore)
+    }
+
+  private def routeDirect(request: ApiRequest, settings: KubernetesHttpSettings, metadataStore: Option[MetadataStore]): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     (request.method.toUpperCase, request.path.split('/').toList.filter(_.nonEmpty)) match
       case ("GET", "healthz" :: Nil) | ("GET", "readyz" :: Nil) =>
         ZIO.succeed(ok("{\"status\":\"ok\"}"))
@@ -215,7 +230,7 @@ object KubernetesHttpApi:
         for root <- ZIO.fromOption(request.query.get("root")).orElseFail(IllegalArgumentException("root query is required")); values <- metadata(metadataStore).flatMap(_.graph(root)).mapError(e => readable(e)) yield ok(ujson.Obj("items" -> ujson.Arr(values.map(_.json)*), "root" -> root).render())
       case ("POST", "v1" :: "lineage" :: "sql" :: Nil) => submitStaticLineage(request, metadataStore)
       case ("POST", "v1" :: "deployments" :: Nil) =>
-        applyDeployment(request, settings)
+        applyDeployment(request, settings, dryRun = false)
       case ("GET", "v1" :: "deployments" :: Nil) =>
         listResources(request, settings, ResourceKind.Deployment, FlinkStatusSnapshot.fromJsonString, _.json)
       case ("GET", "v1" :: "deployments" :: name :: Nil) =>
@@ -229,7 +244,7 @@ object KubernetesHttpApi:
       case ("POST", "v1" :: "deployments" :: name :: "suspend-savepoint" :: Nil) =>
         savepoint(request, settings, name, suspended = true)
       case ("POST", "v1" :: "snapshots" :: Nil) =>
-        createSnapshot(request, settings)
+        createSnapshot(request, settings, dryRun = false)
       case ("GET", "v1" :: "snapshots" :: Nil) =>
         listResources(request, settings, ResourceKind.StateSnapshot, FlinkStateSnapshotStatus.fromJsonString, _.json)
       case ("GET", "v1" :: "snapshots" :: name :: Nil) =>
@@ -261,11 +276,10 @@ object KubernetesHttpApi:
       _ <- ZIO.foreachDiscard(edges)(edge => store.saveLineage(edge.copy(jobId = jobId)).mapError(error => readable(error)))
     yield ApiResponse(201, ujson.Obj("items" -> ujson.Arr(edges.map(_.copy(jobId = jobId).json)*), "sourceType" -> "SQL_STATIC", "evidenceStatus" -> (if edges.isEmpty then "UNKNOWN" else "STATIC_INFERENCE")).render())
 
-  private def applyDeployment(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+  private def applyDeployment(request: ApiRequest, settings: KubernetesHttpSettings, dryRun: Boolean): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       resource <- parseJson(request.body)
       namespace <- namespaceFor(resource, request.query, settings)
-      dryRun = request.query.get("dryRun").exists(_.equalsIgnoreCase("true"))
       body = prepareResource(resource, namespace, settings.defaultSavepointDirectory)
       output <- ZIO.serviceWithZIO[KubernetesApi](_.apply(namespace, body, dryRun))
     yield ok(output)
@@ -324,7 +338,7 @@ object KubernetesHttpApi:
       status <- ZIO.fromEither(FlinkStateSnapshotStatus.fromJsonString(raw).left.map(IllegalArgumentException(_)))
     yield ok(status.json.render())
 
-  private def createSnapshot(request: ApiRequest, settings: KubernetesHttpSettings): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
+  private def createSnapshot(request: ApiRequest, settings: KubernetesHttpSettings, dryRun: Boolean): ZIO[KubernetesApi & StateStore, Throwable, ApiResponse] =
     for
       body <- parseJson(request.body)
       namespace <- namespaceFrom(request.query, settings)
@@ -338,7 +352,6 @@ object KubernetesHttpApi:
           validSnapshot <- cn.xuyinyin.flinklab.domain.FlinkTypes.DeploymentName.from(snapshotName)
         yield FlinkResources.render(FlinkStateSnapshotSpec(namespace, validSnapshot, targetKind, validTarget, snapshotType).resource)
       }.mapError(IllegalArgumentException(_))
-      dryRun = request.query.get("dryRun").exists(_.equalsIgnoreCase("true"))
       output <- ZIO.serviceWithZIO[KubernetesApi](_.apply(namespace, resource, dryRun))
     yield ok(output)
 

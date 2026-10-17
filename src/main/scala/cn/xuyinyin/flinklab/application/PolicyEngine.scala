@@ -16,6 +16,8 @@ final class DefaultPolicyEngine extends PolicyEngine:
       case operation @ FlinkOperation.Upgrade(target, spec, policy) =>
         for
           _ <- ZIO.fromEither(policy.validate)
+          _ <- if spec.requestsSavepointRestore then validateRestore(spec) *>
+            ZIO.fail(InvalidPolicy("explicit restore forbids fallback")).unless(policy.fallback == FallbackPolicy.Forbidden && policy.protection == StateProtection.Savepoint) else ZIO.unit
           observed <- ZIO.fromOption(current).orElseFail(InvalidPolicy("upgrade requires an observed target resource"))
           _ <- ZIO.fail(InvalidPolicy("upgrade target is not RUNNING")).unless(observed.jobState == JobState.Running)
           _ <- policy.protection match
@@ -42,8 +44,21 @@ final class DefaultPolicyEngine extends PolicyEngine:
       case FlinkOperation.Delete(target, policy) =>
         val boundTarget = current.flatMap(_.resource.uid).map(uid => target.copy(uid = Some(uid))).getOrElse(target)
         ZIO.succeed(ValidatedOperation(FlinkOperation.Delete(boundTarget, policy), current))
-      case FlinkOperation.Deploy(_) | FlinkOperation.Suspend(_, _) | FlinkOperation.Resume(_) =>
+      case FlinkOperation.Deploy(spec) if spec.requestsSavepointRestore =>
+        // 显式恢复不等于普通 upsert：原始 path/nonce 仍在持久化命令中，提交和恢复验证均据此判断。
+        validateRestore(spec).as(ValidatedOperation(FlinkOperation.Deploy(spec.copy(flinkConfiguration = spec.flinkConfiguration.updated(
+          "kubernetes.operator.job.upgrade.last-state-fallback.enabled", "false"))), current))
+      case FlinkOperation.Deploy(_) =>
+        ZIO.fail(InvalidPolicy("deployment already exists; use upgrade or an explicit savepoint restore")).when(current.nonEmpty)
+          .as(ValidatedOperation(operation, current))
+      case FlinkOperation.Suspend(_, _) | FlinkOperation.Resume(_) =>
         ZIO.succeed(ValidatedOperation(operation, current))
+
+  /** 指定恢复必须同时声明路径、精确正 nonce、savepoint 模式和运行目标，不能静默降级为普通变更。 */
+  private def validateRestore(spec: FlinkDeploymentSpec): IO[ControlPlaneError, Unit] =
+    ZIO.fail(InvalidPolicy("explicit restore requires initialSavepointPath, a positive safe savepointRedeployNonce, savepoint mode and running state"))
+      .unless(spec.job.initialSavepointPath.nonEmpty && spec.job.savepointRedeployNonce.exists(n => n > 0 && n <= 9007199254740991L) &&
+        spec.job.stateProtection == StateProtection.Savepoint && spec.job.desiredState == DesiredJobState.Running).unit
 
 object PolicyEngine:
   val live: ZLayer[Any, Nothing, PolicyEngine] = ZLayer.succeed(new DefaultPolicyEngine)
