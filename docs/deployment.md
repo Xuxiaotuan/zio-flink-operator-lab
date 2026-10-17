@@ -68,13 +68,13 @@ open http://<任一节点>:30882/
 
 两个 API 副本读取同一个 Kubernetes API Server 和同一组 Flink CR。资源状态和 operation 生命周期默认都来自 Kubernetes CR；每个副本都会轮询，因此状态轮询流量随 API 副本数线性增加。`FlinkOperationLock` CR 按目标资源提供跨副本互斥。设置 `ZIO_FLINK_OPERATION_STORE=postgres` 后，只有 operation 审计切换到 PostgreSQL，Flink 资源状态仍来自 Kubernetes。前端只通过 API Service 访问后端，不参与状态协调。
 
-最近一次已记录的目标发布为 2026-10-16 Pipeline `#48`、代码 `65397d9`，API/UI 标签均为 `build-48-65397d98a2d6`；实际操作和清理结果见 [最新真实验收](testing.md#最新真实验收2026-10-16)。当前单副本前端采用先停后启的滚动策略，发布期间会短暂不可用；客户端恢复连接后继续查询原 operationId。
+最近一次已记录的目标发布为 2026-10-17 Pipeline `#49`、代码 `f700369`，API/UI 标签均为 `build-49-f700369ec5ec`；真实预览、更新拒绝、指定恢复、跨副本读取及清理结果见 [最新真实验收](testing.md#最新真实验收2026-10-17)。当前单副本前端采用先停后启的滚动策略，发布期间会短暂不可用；客户端恢复连接后继续查询原 operationId。
 
 Flink 冷启动和 TaskManager 调度可能超过短轮询窗口，worker 的提交、删除和验证超时由 `ZIO_FLINK_VERIFICATION_TIMEOUT_SECONDS` 控制，默认 180 秒；现场集群可以按镜像拉取和调度时延调整。
 
 ## 持久化格式升级
 
-第一阶段可靠性修复写入 `schemaVersion: 1`，规则见 [持久化与恢复约束](design.md#操作持久化与恢复约束)。该格式已随 Pipeline #48 部署并完成真实验收；Pipeline #47 的证据仍只属于旧代码 `9804df5`。
+第一阶段可靠性修复写入 `schemaVersion: 1`，规则见 [持久化与恢复约束](design.md#操作持久化与恢复约束)。该格式已随 Pipeline #48 部署并完成真实验收。Pipeline #49 保持版本 1，进一步收紧已有目标更新和指定恢复策略，也按统一切换步骤部署，避免旧 worker 绕过新校验。
 
 升级前备份 FlinkOperation CR 或 PostgreSQL operation 表，并检查历史记录可解码。坏记录会使读取或扫描失败，应保留原始 JSON，依据请求与外部执行证据修复；不要批量删除审计记录或改成 COMPLETED。
 
@@ -117,6 +117,7 @@ s3://flink-savepoints/zio-flink-operator/local/orbstack/flink-lineage-test/
 ```json
 {
   "job": {
+    "state": "running",
     "upgradeMode": "savepoint",
     "initialSavepointPath": "s3://flink-savepoints/example/savepoints/savepoint-abc",
     "savepointRedeployNonce": 1

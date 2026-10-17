@@ -19,7 +19,7 @@ mvn -B -f job/pom.xml package -DskipTests
 - Watch 使用真实 TCP/OkHttp 验证等待响应头、建连后无事件时的有界中断、取消和连接释放；HTTP 409 模拟续租失败，分别确认普通请求与 Watch 在释放锁前取消。响应头阻塞测试已先在旧实现复现失败。
 - readiness 原有即时 poll 断言存在调度竞态：推进 TestClock 后改为有界等待响应交付，同时保持依赖未释放，不改变服务端 3 秒超时，也不放宽“依赖仍阻塞时应先返回 503”的条件。
 
-此处只记录本地与协议边界结果；本轮修复的目标集群验收将在部署后另记。下文 Pipeline #48 仍只代表 `65397d9`。
+上述为本地与协议边界结果；同一代码 `f700369` 的目标集群部署和验收见下文 Pipeline #49。Pipeline #48 只代表 `65397d9`。
 
 ### 第一阶段可靠性修复（2026-10-16）
 
@@ -61,7 +61,46 @@ python3 src/test/scripts/packaged-http-contract.py
 
 这是实际 HTTP 进程、真实 PostgreSQL 与 Kubernetes 协议替身的集成证据。真实集群结果单独记录在下文，二者不能相互替代。
 
-## 最新真实验收（2026-10-16）
+## 最新真实验收（2026-10-17）
+
+发布代码 `f700369`，PipelineRun `zio-flink-operator-lab-pdvth`（Jenkins `#49`）为 `Succeeded` / `Finished: SUCCESS`。流水线通过 204 个测试（6 个按开关跳过）、assembly、镜像构建推送，以及部署后的 4/4 HTTP E2E；独立 PostgreSQL 的 2/2 契约已在本地临时库另行通过。API/UI/示例作业使用不可变标签 `build-49-f700369ec5ec`，API digest 为 `sha256:a9965a8d8f421c24963f637f7a5eed501d6bb1706eb3a399c9c0ac89a1d15ddc`。
+
+部署前用新 assembly 解码全部 18 条历史操作，0 条拒绝且全部为终态。隔离 API Service、将 API 缩至 0 并确认旧 Pod 全部删除，再切换镜像和恢复 2 副本；两个新版 API Ready 后先恢复入口，再更新前端。维护 selector 和一次性 Pipeline 定义均已还原。本轮没有 CRD 或持久化格式变化，仍统一切换以避免新旧更新策略混跑。
+
+最终 API `2/2` 分布于 `xjw`、`xxt`，前端 `1/1`；两节点 `:30882/healthz`、`/readyz` 均为 200，首页与发布源码一致。资源状态与 OperationStore 使用 Kubernetes，元数据保留原 PostgreSQL Secret；本轮没有切换目标集群的 PostgreSQL OperationStore。
+
+### 安全边界与操作结果
+
+作业 `zio-e2e-20261017-e9f559` 使用独立前缀 `s3://flink-savepoints/zio-e2e-20261017-e9f559/`。两个预览端点各接受 `true`、`TRUE`、带空格和制表符的 true，共 8 次真实 API Server dry-run 均返回 200；没有持久化 Deployment、Snapshot 或 Operation。非法值返回 400。
+
+| 场景 | operationId | 最终状态 |
+| --- | --- | --- |
+| 提交有状态作业 | `ef7bfbfa-c8cf-319d-ac55-67f80104b691` | `COMPLETED` |
+| 拒绝普通 Deploy 更新已有目标 | `9c89910d-715c-329c-ba5b-3036a87bc92d` | `FAILED` |
+| 手动 checkpoint | `c051d919-9974-30de-8fb1-81099aa7afa8` | `COMPLETED` |
+| 手动 savepoint | `2273d359-a96b-3f6f-83aa-189ecfadc7fc` | `COMPLETED` |
+| 严格 savepoint 升级 | `626c94af-fc63-3d68-b932-74d8452da072` | `COMPLETED` |
+| savepoint 暂停 | `a5884adc-55cb-33a2-b04a-dd00f1cee850` | `COMPLETED` |
+| 恢复运行 | `889998d0-cf17-37fd-a1d4-2f0ed41f570b` | `COMPLETED` |
+| 过期锁接管 + 严格重启 | `e533f8fb-1222-30ba-9246-a71de8b9a512` | `COMPLETED` |
+| 指定 savepoint 恢复 + 删除一个 API Pod | `0598e5b7-75df-3c07-80bc-9af1f7f6dde4` | `COMPLETED` |
+| 拒绝旧恢复 nonce | `819cf4e2-2ff6-318a-944b-7f60ff1ef138` | `FAILED` |
+| 删除测试作业 | `57f83769-06ec-3ffd-85ab-c09d19255ba5` | `COMPLETED` |
+
+两个 `FAILED` 是预期的安全拒绝：普通 Deploy 与旧 nonce 均未进入 `VALIDATION_PASSED`，前后目标 generation/spec 保持一致，普通 Deploy 还核对了 UID 未变。其余 9 个操作全部完成。
+
+- 自动和手动 checkpoint/savepoint、升级、暂停恢复、重启和指定恢复后的 checkpoint `_metadata` 均确认 RustFS HEAD 200。严格升级将并行度 1 改为 2，升级与重启审计 savepoint 路径均等于 Flink REST `latest.restored.external_path`，没有 fallback 事件。
+- 真实过期锁 `flink-lock-ae30640e89f9c9e5` 的 UID 从 `0fe08b01-07cc-40ce-82d3-26f5b11eda85` 变为 `9c4043e4-adab-4466-8f9d-3588c05950ce`；新锁绑定本次 restart operation 并持有未来租期，重启完成后释放。
+- 指定恢复源为 `s3://flink-savepoints/zio-e2e-20261017-e9f559/savepoints/savepoint-04d8eb-de4a058fd155`。Operator `lastReconciledSpec` 的路径、nonce、savepoint 模式和禁用 fallback 均符合请求，Flink REST 实际恢复路径也一致；`allowNonRestoredState=false` 保留在版本 1 审计记录中。保存前计数为 `703`，恢复请求后新建 TaskManager 捕获的最小计数为 `781`，且继续产生 checkpoint。示例使用单一 key，计数仅由持有该分区的 TaskManager 输出；它证明 keyed ValueState 连续，不证明业务源位点或端到端 exactly-once。
+- 恢复处于 `VERIFYING` 时删除 `xjw` 上一个 API Pod，同一 operation 最终完成，替代 Pod Ready。未识别被删 Pod 是否持有租约，不将其等同于整机故障或锁持有者接管。直连两个节点的 API Pod 读到完全一致的恢复 operation；另一节点重试相同 requestId 仍返回原 operationId，没有增加记录。
+
+### 清理与证据范围
+
+先删除本轮 Snapshot（savepoint 的 `disposeOnDelete=false`），再通过 HTTP 删除作业，随后清理本轮 11 条操作及 RustFS 前缀剩余 27 个对象。复查本轮 Deployment、SessionJob、Snapshot、Lock、Pod、Service、ReplicaSet、ConfigMap 和对象前缀均无残留，Jenkins 临时 agent 已退出；18 条原有历史操作的 UID 和完整审计内容保持不变。临时管理 kubeconfig 已删除。上述 HEAD 200 是清理前证据，测试 savepoint 文件不再保留。
+
+Watch 的响应头阻塞、空闲流中断、续租失败后的取消顺序由真实 TCP/OkHttp 契约验证；目标集群本轮验证正常观察与单 Pod 删除下的操作完成。它们均不证明 API Server 撤销已接受的写入。本轮未做整机故障、生产容量或多小时稳定性复测。
+
+## 上一发布真实验收（2026-10-16，Pipeline #48）
 
 发布代码 `65397d9`，PipelineRun `zio-flink-operator-lab-95hv9`（Jenkins `#48`）为 `Succeeded` / `Finished: SUCCESS`。流水线通过 193 个测试（6 个按条件跳过）、assembly、镜像构建推送和部署后 4/4 HTTP 检查。API/UI 标签均为 `build-48-65397d98a2d6`；API 镜像 digest 为 `sha256:ccd17a89719437b41b641b143eab301366d69e0c2cb31f4a0f81a217812e29ac`。
 
@@ -150,7 +189,7 @@ python3 src/test/scripts/packaged-http-contract.py
 
 以下本地结果只说明代码级契约和构建通过，不能替代现场验收。目标集群的 PipelineRun、Operator reconcile、两副本统一 operation 状态、checkpoint/savepoint 写入 RustFS、savepoint 恢复、单副本故障演练、锁租约接管和 PostgreSQL 双节点运行已有现场证据；HTTP dry-run、策略请求一致性、活动资源互斥、Operation resourceVersion CAS、worker 阶段恢复、快照 UID/路径校验、删除 UID 前置条件、watch EOF 重连和 Evidence 审计也有回归测试。控制面压力与长稳结果见 2026-10-08 历史记录，本轮未重跑容量测试。
 
-历史现场记录：StatefulCounterJob 已通过 RustFS checkpoint、FlinkStateSnapshot savepoint 和新 Deployment 恢复；该记录保留用于说明早期 Operator 行为，当前恢复验收以 2026-10-16 记录为准。
+历史现场记录：StatefulCounterJob 已通过 RustFS checkpoint、FlinkStateSnapshot savepoint 和新 Deployment 恢复；该记录保留用于说明早期 Operator 行为，当前恢复验收以 2026-10-17 记录为准。
 
 ### 历史现场验收（2026-10-10）
 
@@ -200,7 +239,7 @@ KubeSphere Pipeline 在 API/UI rollout 完成后执行同一套测试，使用�
 
 ## 历史目标集群验证
 
-以下为早期环境和功能记录，当前发布以 2026-10-16 验收为准：
+以下为早期环境和功能记录，当前发布以 2026-10-17 验收为准：
 
 - K8s `v1.23.17`，两节点 `xjw`、`xxt`；Flink Kubernetes Operator `1.16.1` 已 Ready，并只 watch `bigdata-lab`。
 - `zio-flink-operator` 两个 API Pod 分别调度到 `xjw`、`xxt`；前端 `zio-flink-operator-ui` 单副本通过 NodePort `30882` 对外提供页面和反向代理，从两台节点访问 `/healthz` 均返回 `{"status":"ok"}`。
@@ -235,7 +274,7 @@ KubeSphere Pipeline 在 API/UI rollout 完成后执行同一套测试，使用�
 
 早期现场证据覆盖了运行中 Job 的 checkpoint、savepoint、RustFS 结果路径和 savepoint 恢复连续性；对已结束 Job 的 savepoint operation `dfa0f661-22ad-4f07-9ccd-77101c6d95f3` 仍保留为负向契约证据，审计事件记录 Operator 的 `ABANDONED` 原因（目标 Job 不在运行）。
 
-此前 build `#11` 的 Source 阶段曾因 GitHub 连接重置而 `external_blocked`；后续 PipelineRun `#22` 已成功，说明当时的已推送基线具备 CI/CD 证据。这些是历史记录，本轮 CI/CD 以 2026-10-16 的 PipelineRun 为准。
+此前 build `#11` 的 Source 阶段曾因 GitHub 连接重置而 `external_blocked`；后续 PipelineRun `#22` 已成功，说明当时的已推送基线具备 CI/CD 证据。这些是历史记录，本轮 CI/CD 以 2026-10-17 的 PipelineRun #49 为准。
 
 ## 测试覆盖
 
